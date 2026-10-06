@@ -1,6 +1,9 @@
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
-    tracing_subscriber::fmt::init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        "kestrel_app=info,kestrel_core=info,wgpu=warn,wgpu_core=warn,wgpu_hal=warn,naga=warn".into()
+    });
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

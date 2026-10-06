@@ -324,3 +324,145 @@ fn test_integration_pades_digital_signature_embedding_and_verification() {
         "PAdES digital signature verification must succeed"
     );
 }
+
+#[test]
+fn test_integration_identity_h_and_tounicode_cmap_extraction() {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    // Create a ToUnicode CMap stream
+    let cmap_content = b"/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Custom-ToUnicode def
+/CMapType 2 def
+1 beginbfrange
+<0001> <0005> <0041>
+endbfrange
+1 beginbfchar
+<0006> <005A>
+endbfchar
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end";
+    let cmap_id = doc.add_object(Stream::new(dictionary! {}, cmap_content.to_vec()));
+
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type0",
+        "BaseFont" => "TestCIDFont",
+        "Encoding" => "Identity-H",
+        "ToUnicode" => cmap_id,
+    });
+
+    let content_stream = b"BT /F1 12 Tf 50 700 Td <0001000200030006> Tj ET";
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content_stream.to_vec()));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Resources" => dictionary! {
+            "Font" => dictionary! {
+                "F1" => font_id,
+            },
+        },
+    });
+
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buffer = Vec::new();
+    doc.save_to(&mut buffer).expect("Save test PDF");
+
+    let session = DocumentSession::open_from_bytes(buffer, None).expect("Open session");
+    let extracted = session.get_page_text(0).expect("Extracted text");
+
+    assert!(
+        !extracted.contains("Identity-H Unimplemented"),
+        "Must never contain Identity-H Unimplemented"
+    );
+    assert!(
+        !extracted.contains("?Identity-H Unimplemented?"),
+        "Must never contain ?Identity-H Unimplemented?"
+    );
+    assert!(
+        extracted.contains("ABCZ"),
+        "Must correctly decode CMap bfrange and bfchar mappings: got '{}'",
+        extracted
+    );
+}
+
+#[test]
+fn test_integration_identity_h_fallback_without_cmap() {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type0",
+        "BaseFont" => "IdentityCIDFont",
+        "Encoding" => "Identity-H",
+    });
+
+    let content_stream = b"BT /F1 12 Tf 50 700 Td <00480065006C006C006F> Tj ET";
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content_stream.to_vec()));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Resources" => dictionary! {
+            "Font" => dictionary! {
+                "F1" => font_id,
+            },
+        },
+    });
+
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buffer = Vec::new();
+    doc.save_to(&mut buffer).expect("Save test PDF");
+
+    let session = DocumentSession::open_from_bytes(buffer, None).expect("Open session");
+    let extracted = session.get_page_text(0).expect("Extracted text");
+
+    assert!(
+        !extracted.contains("Identity-H Unimplemented"),
+        "Must never contain Identity-H Unimplemented"
+    );
+    assert!(
+        !extracted.contains("?Identity-H Unimplemented?"),
+        "Must never contain ?Identity-H Unimplemented?"
+    );
+    assert!(
+        extracted.contains("Hello"),
+        "Must decode UTF-16BE Identity-H string: got '{}'",
+        extracted
+    );
+}

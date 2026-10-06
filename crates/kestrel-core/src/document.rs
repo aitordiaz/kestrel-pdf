@@ -94,8 +94,8 @@ impl DocumentSession {
                 rotation_degrees,
             });
 
-            // Extract page text
-            let text = doc.extract_text(&[*page_num]).unwrap_or_default();
+            // Extract page text robustly
+            let text = extract_page_text_robust(&doc, *page_num);
             page_texts.push(text);
         }
 
@@ -149,7 +149,7 @@ impl DocumentSession {
     pub fn extract_text_for_page(&self, page_index: usize) -> Result<String> {
         let doc = lopdf::Document::load_mem(&self.raw_bytes)?;
         let page_num = (page_index + 1) as u32;
-        let text = doc.extract_text(&[page_num]).unwrap_or_default();
+        let text = extract_page_text_robust(&doc, page_num);
         Ok(text)
     }
 
@@ -165,7 +165,8 @@ impl DocumentSession {
         if let Ok(doc) = lopdf::Document::load_mem(&self.raw_bytes) {
             for page in &self.pages {
                 let page_num = (page.index + 1) as u32;
-                if let Ok(text) = doc.extract_text(&[page_num]) {
+                let text = extract_page_text_robust(&doc, page_num);
+                if !text.is_empty() {
                     let text_lower = text.to_lowercase();
                     let matches: Vec<_> = text_lower.match_indices(&query_lower).collect();
                     if !matches.is_empty() {
@@ -277,4 +278,300 @@ impl DocumentSession {
             .context("Failed to write PDF binary stream")?;
         Ok(output)
     }
+}
+
+/// Extracts page text robustly, decoding Identity-H and ToUnicode CMaps while sanitizing any unimplemented tags.
+pub fn extract_page_text_robust(doc: &lopdf::Document, page_num: u32) -> String {
+    let pages = doc.get_pages();
+    let page_id = match pages.get(&page_num) {
+        Some(&id) => id,
+        None => return String::new(),
+    };
+
+    // 1. Extract font ToUnicode CMaps and encodings for this page
+    let fonts = doc.get_page_fonts(page_id);
+    let mut font_cmaps: std::collections::HashMap<Vec<u8>, std::collections::HashMap<u16, String>> =
+        std::collections::HashMap::new();
+    let mut font_encodings: std::collections::HashMap<Vec<u8>, String> =
+        std::collections::HashMap::new();
+
+    for (font_name, font_dict) in &fonts {
+        if let Ok(enc_name) = font_dict.get(b"Encoding").and_then(Object::as_name_str) {
+            font_encodings.insert(font_name.clone(), enc_name.to_string());
+        }
+
+        if let Ok(to_unicode_obj) = font_dict.get(b"ToUnicode") {
+            let stream = match to_unicode_obj {
+                Object::Reference(ref_id) => {
+                    doc.get_object(*ref_id).and_then(Object::as_stream).ok()
+                }
+                Object::Stream(s) => Some(s),
+                _ => None,
+            };
+
+            if let Some(stream) = stream {
+                let stream_bytes = stream
+                    .decompressed_content()
+                    .unwrap_or_else(|_| stream.content.clone());
+                let cmap = parse_to_unicode_cmap(&stream_bytes);
+                if !cmap.is_empty() {
+                    font_cmaps.insert(font_name.clone(), cmap);
+                }
+            }
+        }
+    }
+
+    // 2. Decode page content operations
+    if let Ok(content_bytes) = doc.get_page_content(page_id) {
+        if let Ok(content) = lopdf::content::Content::decode(&content_bytes) {
+            let mut extracted = String::new();
+            let mut current_font = Vec::new();
+
+            for operation in &content.operations {
+                match operation.operator.as_str() {
+                    "Tf" => {
+                        if let Some(font_obj) = operation.operands.first() {
+                            if let Ok(f_name) = font_obj.as_name() {
+                                current_font = f_name.to_vec();
+                            }
+                        }
+                    }
+                    "Tj" | "TJ" => {
+                        decode_text_operands(
+                            &mut extracted,
+                            &operation.operands,
+                            &current_font,
+                            &font_cmaps,
+                            &font_encodings,
+                        );
+                    }
+                    "ET" | "T*" => {
+                        if !extracted.ends_with('\n') {
+                            extracted.push('\n');
+                        }
+                    }
+                    "'" | "\"" => {
+                        extracted.push('\n');
+                        decode_text_operands(
+                            &mut extracted,
+                            &operation.operands,
+                            &current_font,
+                            &font_cmaps,
+                            &font_encodings,
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
+            let cleaned = sanitize_extracted_text(&extracted);
+            if !cleaned.trim().is_empty() {
+                return cleaned;
+            }
+        }
+    }
+
+    // 3. Fallback: lopdf built-in extraction, strictly stripped of any Identity-H Unimplemented tags
+    let fallback = doc.extract_text(&[page_num]).unwrap_or_default();
+    sanitize_extracted_text(&fallback)
+}
+
+fn parse_to_unicode_cmap(bytes: &[u8]) -> std::collections::HashMap<u16, String> {
+    let mut cmap = std::collections::HashMap::new();
+    let text = String::from_utf8_lossy(bytes);
+
+    let mut in_bfchar = false;
+    let mut in_bfrange = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("beginbfchar") {
+            in_bfchar = true;
+            in_bfrange = false;
+            continue;
+        }
+        if trimmed.contains("endbfchar") {
+            in_bfchar = false;
+            continue;
+        }
+        if trimmed.contains("beginbfrange") {
+            in_bfrange = true;
+            in_bfchar = false;
+            continue;
+        }
+        if trimmed.contains("endbfrange") {
+            in_bfrange = false;
+            continue;
+        }
+
+        if in_bfchar {
+            let tokens: Vec<&str> = trimmed
+                .split_whitespace()
+                .filter(|t| t.starts_with('<') && t.ends_with('>'))
+                .collect();
+            for chunk in tokens.chunks(2) {
+                if chunk.len() == 2 {
+                    let src_hex = chunk[0].trim_matches(|c| c == '<' || c == '>');
+                    let dst_hex = chunk[1].trim_matches(|c| c == '<' || c == '>');
+                    if let Ok(src_code) = u16::from_str_radix(src_hex, 16) {
+                        let dst_str = hex_to_utf16_string(dst_hex);
+                        if !dst_str.is_empty() {
+                            cmap.insert(src_code, dst_str);
+                        }
+                    }
+                }
+            }
+        }
+
+        if in_bfrange {
+            let tokens: Vec<&str> = trimmed
+                .split_whitespace()
+                .filter(|t| t.starts_with('<') && t.ends_with('>'))
+                .collect();
+            if tokens.len() == 3 {
+                let start_hex = tokens[0].trim_matches(|c| c == '<' || c == '>');
+                let end_hex = tokens[1].trim_matches(|c| c == '<' || c == '>');
+                let dst_start_hex = tokens[2].trim_matches(|c| c == '<' || c == '>');
+                if let (Ok(start), Ok(end), Ok(dst_start)) = (
+                    u16::from_str_radix(start_hex, 16),
+                    u16::from_str_radix(end_hex, 16),
+                    u16::from_str_radix(dst_start_hex, 16),
+                ) {
+                    for code in start..=end {
+                        let offset = code - start;
+                        let dst_code = dst_start + offset;
+                        if let Some(ch) = char::from_u32(dst_code as u32) {
+                            cmap.insert(code, ch.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    cmap
+}
+
+fn hex_to_utf16_string(hex: &str) -> String {
+    let mut u16_units = Vec::new();
+    let mut chars = hex.chars();
+    while let (Some(c1), Some(c2), Some(c3), Some(c4)) =
+        (chars.next(), chars.next(), chars.next(), chars.next())
+    {
+        let chunk: String = [c1, c2, c3, c4].iter().collect();
+        if let Ok(val) = u16::from_str_radix(&chunk, 16) {
+            u16_units.push(val);
+        }
+    }
+    if !u16_units.is_empty() {
+        String::from_utf16_lossy(&u16_units)
+    } else if let Ok(byte_val) = u8::from_str_radix(hex, 16) {
+        (byte_val as char).to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn decode_text_operands(
+    output: &mut String,
+    operands: &[lopdf::Object],
+    current_font: &[u8],
+    font_cmaps: &std::collections::HashMap<Vec<u8>, std::collections::HashMap<u16, String>>,
+    font_encodings: &std::collections::HashMap<Vec<u8>, String>,
+) {
+    let cmap_opt = font_cmaps.get(current_font);
+    let encoding_opt = font_encodings.get(current_font).map(|s| s.as_str());
+
+    for op in operands {
+        match op {
+            lopdf::Object::String(bytes, _) => {
+                decode_single_string(output, bytes, cmap_opt, encoding_opt);
+            }
+            lopdf::Object::Array(arr) => {
+                for item in arr {
+                    match item {
+                        lopdf::Object::String(bytes, _) => {
+                            decode_single_string(output, bytes, cmap_opt, encoding_opt);
+                        }
+                        lopdf::Object::Integer(i) if *i < -100 => {
+                            output.push(' ');
+                        }
+                        lopdf::Object::Real(r) if *r < -100.0 => {
+                            output.push(' ');
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn decode_single_string(
+    output: &mut String,
+    bytes: &[u8],
+    cmap: Option<&std::collections::HashMap<u16, String>>,
+    encoding: Option<&str>,
+) {
+    if bytes.is_empty() {
+        return;
+    }
+
+    // 1. If CMap is available, use it (2-byte keys)
+    if let Some(cmap) = cmap {
+        for chunk in bytes.chunks(2) {
+            let code = if chunk.len() == 2 {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            } else {
+                chunk[0] as u16
+            };
+
+            if let Some(mapped) = cmap.get(&code) {
+                output.push_str(mapped);
+            } else if let Some(ch) = char::from_u32(code as u32) {
+                if !ch.is_control() || ch == '\n' || ch == '\t' {
+                    output.push(ch);
+                }
+            }
+        }
+        return;
+    }
+
+    // 2. If encoding is Identity-H without CMap: decode as 2-byte UTF-16BE
+    if encoding == Some("Identity-H") {
+        for chunk in bytes.chunks(2) {
+            let code = if chunk.len() == 2 {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            } else {
+                chunk[0] as u16
+            };
+
+            if let Some(ch) = char::from_u32(code as u32) {
+                if !ch.is_control() || ch == '\n' || ch == '\t' {
+                    output.push(ch);
+                }
+            }
+        }
+        return;
+    }
+
+    // 3. Standard encoding / ASCII / WinAnsi
+    let decoded = lopdf::Document::decode_text(encoding, bytes);
+    let sanitized = sanitize_extracted_text(&decoded);
+    if !sanitized.is_empty() {
+        output.push_str(&sanitized);
+    } else {
+        // Fallback: extract any printable ASCII
+        for &b in bytes {
+            if (32..=126).contains(&b) || b == b'\n' || b == b'\t' {
+                output.push(b as char);
+            }
+        }
+    }
+}
+
+pub fn sanitize_extracted_text(text: &str) -> String {
+    text.replace("?Identity-H Unimplemented?", "")
+        .replace("Identity-H Unimplemented", "")
 }
