@@ -1,0 +1,30 @@
+# Build outputs
+/target/
+/build/
+/bin/
+/obj/
+/dist/
+/out/
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Dependencies
+node_modules/
+vendor/
+
+# Logs & scratch
+*.log
+/scratch/
+/tmp/
