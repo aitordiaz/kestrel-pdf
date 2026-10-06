@@ -1683,7 +1683,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "eframe",
@@ -1700,7 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
