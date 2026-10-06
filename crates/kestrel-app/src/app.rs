@@ -36,8 +36,9 @@ impl Default for KestrelApp {
     }
 }
 
-impl eframe::App for KestrelApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl KestrelApp {
+    /// Renders the entire application UI layout given an egui Context.
+    pub fn render_ui(&mut self, ctx: &egui::Context) {
         // Top Toolbar
         egui::TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -50,7 +51,8 @@ impl eframe::App for KestrelApp {
                         .add_filter("PDF Documents", &["pdf"])
                         .pick_file()
                     {
-                        self.current_file_name = Some(path.file_name().unwrap().to_string_lossy().to_string());
+                        self.current_file_name =
+                            Some(path.file_name().unwrap().to_string_lossy().to_string());
                         self.total_pages = 1;
                         self.current_page = 1;
                     }
@@ -93,7 +95,10 @@ impl eframe::App for KestrelApp {
                     if self.total_pages == 0 {
                         ui.label("No document loaded.");
                     } else {
-                        ui.label(format!("Page {} of {}", self.current_page, self.total_pages));
+                        ui.label(format!(
+                            "Page {} of {}",
+                            self.current_page, self.total_pages
+                        ));
                     }
                 });
         }
@@ -109,9 +114,19 @@ impl eframe::App for KestrelApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         // Render viewport area
-                        ui.label(format!("Viewing: {:?} at {:.0}% zoom", self.current_file_name, self.zoom_level * 100.0));
+                        ui.label(format!(
+                            "Viewing: {:?} at {:.0}% zoom",
+                            self.current_file_name,
+                            self.zoom_level * 100.0
+                        ));
                     });
             }
         });
+    }
+}
+
+impl eframe::App for KestrelApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.render_ui(ctx);
     }
 }

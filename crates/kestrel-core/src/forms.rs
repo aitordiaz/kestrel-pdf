@@ -1,10 +1,21 @@
 /// Interactive AcroForm field types.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormFieldType {
-    Text { multiline: bool, password: bool },
-    CheckBox { checked: bool },
-    RadioButton { selected: bool, group_name: String },
-    Choice { options: Vec<String>, selected: Option<usize> },
+    Text {
+        multiline: bool,
+        password: bool,
+    },
+    CheckBox {
+        checked: bool,
+    },
+    RadioButton {
+        selected: bool,
+        group_name: String,
+    },
+    Choice {
+        options: Vec<String>,
+        selected: Option<usize>,
+    },
     Signature,
 }
 
