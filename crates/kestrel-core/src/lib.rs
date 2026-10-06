@@ -9,5 +9,5 @@ pub mod redact;
 pub mod render;
 pub mod sign;
 
-pub use document::{DocumentSession, PageInfo};
-pub use render::{PageTileKey, RenderTileRequest, TileBuffer, TileCache};
+pub use document::{DocumentSession, OutlineItem, PageInfo, SearchResult};
+pub use render::{PageTileKey, RenderPipeline, RenderTileRequest, TileBuffer, TileCache};

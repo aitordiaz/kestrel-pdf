@@ -1,6 +1,6 @@
 use kestrel_core::document::DocumentSession;
 use kestrel_core::redact::{RedactionEngine, RedactionRect, RedactionTarget};
-use kestrel_core::render::{PageTileKey, TileBuffer, TileCache};
+use kestrel_core::render::{PageTileKey, RenderPipeline, TileBuffer, TileCache};
 use lopdf::{dictionary, Document, Object, Stream};
 use std::sync::Arc;
 use std::thread;
@@ -58,12 +58,60 @@ fn test_integration_document_session_load_and_aspect_ratio() {
         DocumentSession::open_from_bytes(pdf_bytes, None).expect("Should open valid PDF in memory");
 
     assert_eq!(session.file_path, None);
-    assert_eq!(session.page_count, 0); // Unpopulated until PDFium binding loads page tree
+    assert_eq!(session.page_count, 1, "Document should report 1 page");
+    assert_eq!(session.pages.len(), 1);
+    assert_eq!(session.pages[0].index, 0);
+
+    let aspect = session.page_aspect_ratio(0).expect("Page 0 aspect ratio");
+    assert!((aspect - (595.0 / 842.0)).abs() < 0.05);
+}
+
+#[test]
+fn test_integration_full_text_search() {
+    let target_keyword = "CONFIDENTIAL_REPORT_2026";
+    let pdf_bytes = create_test_pdf_bytes(&format!("Project Alpha: {}", target_keyword));
+
+    let session =
+        DocumentSession::open_from_bytes(pdf_bytes, None).expect("Should open valid PDF in memory");
+
+    let matches = session.search_text(target_keyword);
+    assert_eq!(matches.len(), 1, "Should find exactly 1 search match");
+    assert_eq!(matches[0].page_index, 0);
+    assert!(matches[0].snippet.contains("CONFIDENTIAL_REPORT_2026"));
+
+    let no_matches = session.search_text("NON_EXISTENT_QUERY_123");
+    assert!(no_matches.is_empty());
+}
+
+#[test]
+fn test_integration_render_pipeline_async_workers() {
+    let pipeline = RenderPipeline::new(16);
+    let key = PageTileKey {
+        page_index: 0,
+        tile_x: 0,
+        tile_y: 0,
+        zoom_level_percent: 100,
+        device_pixel_ratio_x100: 100,
+    };
+
+    // Request tile
+    pipeline.request_tile(key, 512, 512);
+
+    // Give worker brief moment to process
+    thread::sleep(std::time::Duration::from_millis(50));
+    pipeline.process_incoming_tiles();
+
+    // Verify tile was created and cached
+    let cached = pipeline.cache().get(&key);
+    assert!(cached.is_some(), "Tile must be present in cache");
+    let buffer = cached.unwrap();
+    assert_eq!(buffer.width, 512);
+    assert_eq!(buffer.height, 512);
+    assert_eq!(buffer.rgba.len(), 512 * 512 * 4);
 }
 
 #[test]
 fn test_integration_tile_cache_concurrency_and_lru_eviction() {
-    // Test LRU capacity bound of 4 tiles
     let cache = Arc::new(TileCache::new(4));
     let mut handles = vec![];
 
@@ -102,7 +150,6 @@ fn test_integration_tile_cache_concurrency_and_lru_eviction() {
         zoom_level_percent: 100,
         device_pixel_ratio_x100: 100,
     };
-    // The most recently inserted tile should still exist or queryable without panic
     let _ = cache.get(&key_probe);
 }
 
@@ -111,7 +158,6 @@ fn test_integration_true_redaction_pipeline() {
     let secret_phrase = "SECRET_CREDIT_CARD_4111222233334444";
     let original_bytes = create_test_pdf_bytes(secret_phrase);
 
-    // Verify secret is in the raw PDF
     let raw_string = String::from_utf8_lossy(&original_bytes);
     assert!(
         raw_string.contains(secret_phrase),
