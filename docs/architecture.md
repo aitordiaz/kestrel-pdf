@@ -75,17 +75,31 @@ Velox-PDF enforces **Cryptographic & Structural True Redaction**:
 
 ---
 
-## 3. Technology Stack Selection
+## 3. Technology Stack Selection & Universal Target Matrix
 
-### Language Recommendation: **Rust (Engine Core) + Slint / Native UI**
+### Language Recommendation: **Rust (Engine Core)**
 - **Why Rust over pure C++**:
   1. **Memory Safety & Exploit Prevention**: PDF parsers handle arbitrary untrusted user files. C++ parsers have suffered from decades of buffer overruns and use-after-free vulnerabilities. Rust prevents these at compile time.
   2. **Fearless Concurrency**: Managing multi-threaded tile caches and asynchronous render queues without data races is trivial in Rust (`crossbeam`, `rayon`, `tokio`).
   3. **Zero Runtime Overhead**: Compiles to LLVM native machine code; identical microsecond performance to C++.
-- **GUI Layer Options**:
-  - **Option 1 (Recommended)**: **Slint (Rust)**: Compiles to native code, hardware-accelerated backends (Direct3D on Windows, Metal on macOS), ultra-low memory footprint (< 15MB base), 60+ FPS rendering.
-  - **Option 2**: **Rust Core with C-ABI FFI + Platform-Native Shells** (WinUI 3 via C++/WinRT for Windows, Swift/AppKit for macOS). Maximum native OS look-and-feel.
-  - **Option 3**: **C++20 + Qt 6**. Industry standard for Sioyek/Okular, but heavy runtime DLL distribution and LGPL licensing constraints.
+
+---
+
+### Universal Cross-Platform Evaluation (Windows, macOS, Linux, FreeBSD & WebAssembly)
+
+To achieve a **single codebase** running natively across **Windows, macOS, Linux, FreeBSD, and the browser via WebAssembly (WASM)**, the top framework candidates are:
+
+| Framework | Architecture | Windows / macOS / Linux | FreeBSD Support | WebAssembly (WASM) | Rendering Backend | Licensing | Verdict |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Slint** (Rust) | Native Retained DSL | Native Direct3D / Metal / Skia | Supported (Cargo / X11 / Wayland) | **First-Class** (Canvas / WebGL) | FemtoVG / Skia / Software | Dual (GPLv3 / Royalty-Free / Commercial) | **Top Choice**: Clean declarative UI, minimal footprint (<15MB), compiles to native machine code on desktop and WASM on web. |
+| **egui** (`eframe` + `wgpu`) | Immediate Mode (Rust) | Native `wgpu` (DirectX 12 / Metal / Vulkan) | Supported (via `winit` / `wgpu`) | **First-Class** (Canvas / WebGL2 / WebGPU) | Pure `wgpu` | MIT / Apache-2.0 | **Strong Alternative**: Pure Rust, 100% permissive license, effortless GPU texture blitting for PDF tiles. |
+| **Iced** (Rust) | Retained (Elm architecture) | Native `wgpu` | Supported | Supported | `wgpu` | MIT | Good type-safety, but UI ecosystem is evolving. |
+| **Flutter** (Dart / C++) | Retained CanvasKit | Native Windows / macOS / Linux | Community / Unofficial only | Supported (Heavy WASM bundle) | Skia / Impeller | BSD-3 | Heavier memory (~50MB+), Dart GC pauses, weak FreeBSD tier. |
+| **Tauri v2** (Rust + Web) | Hybrid (Rust + Webview) | Native WebView2 / WebKit | Supported via WebKitGTK | Standalone web app | Browser DOM / Canvas | MIT / Apache-2.0 | IPC serialization overhead when streaming 4K page bitmaps to JavaScript. |
+
+### PDF Engine WebAssembly Strategy
+- **Desktop (Win/Mac/Linux/FreeBSD)**: Native PDFium dynamic/static binary + `lopdf` compiled directly into native executable.
+- **Web (Browser WASM)**: Precompiled `pdfium.wasm` (Emscripten) loaded asynchronously via `wasm-bindgen`, with `lopdf` compiling natively to `wasm32-unknown-unknown` without C dependencies.
 
 ---
 
