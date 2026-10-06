@@ -33,6 +33,7 @@ pub struct DocumentSession {
     pub raw_bytes: Vec<u8>,
     pub page_count: u16,
     pub pages: Vec<PageInfo>,
+    pub page_texts: Vec<String>,
     pub outlines: Vec<OutlineItem>,
 }
 
@@ -51,6 +52,7 @@ impl DocumentSession {
             lopdf::Document::load_mem(&bytes).context("Failed to parse PDF document structure")?;
 
         let mut pages = Vec::new();
+        let mut page_texts = Vec::new();
         let page_dict_map = doc.get_pages();
 
         for (page_num, object_id) in &page_dict_map {
@@ -85,6 +87,10 @@ impl DocumentSession {
                 height_pt,
                 rotation_degrees,
             });
+
+            // Extract page text
+            let text = doc.extract_text(&[*page_num]).unwrap_or_default();
+            page_texts.push(text);
         }
 
         let page_count = pages.len() as u16;
@@ -112,8 +118,14 @@ impl DocumentSession {
             raw_bytes: bytes,
             page_count,
             pages,
+            page_texts,
             outlines,
         })
+    }
+
+    /// Returns the text content for a given page index.
+    pub fn get_page_text(&self, page_index: usize) -> Option<&str> {
+        self.page_texts.get(page_index).map(|s| s.as_str())
     }
 
     /// Returns the aspect ratio (width / height) of the specified page.
