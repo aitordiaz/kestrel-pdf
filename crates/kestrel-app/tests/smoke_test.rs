@@ -1,6 +1,21 @@
-use egui::Context;
-use kestrel_app::app::{ActiveTool, KestrelApp};
+use egui::{Color32, Context};
+use kestrel_app::app::{ActiveTool, FitMode, KestrelApp, SidebarTab};
+use kestrel_core::synthetic::{
+    generate_synthetic_forms_pdf, generate_synthetic_search_corpus_pdf,
+    generate_synthetic_visual_showcase_pdf,
+};
 use lopdf::{dictionary, Document, Object, Stream};
+
+fn has_rect_with_fill(shapes: &[egui::epaint::ClippedShape], target_fill: egui::Color32) -> bool {
+    fn check_shape(shape: &egui::epaint::Shape, target: egui::Color32) -> bool {
+        match shape {
+            egui::epaint::Shape::Rect(rect_shape) => rect_shape.fill == target,
+            egui::epaint::Shape::Vec(vec) => vec.iter().any(|s| check_shape(s, target)),
+            _ => false,
+        }
+    }
+    shapes.iter().any(|c| check_shape(&c.shape, target_fill))
+}
 
 /// Helper function to create a minimal, valid in-memory PDF document.
 fn create_sample_pdf_bytes(title: &str) -> Vec<u8> {
@@ -373,4 +388,379 @@ fn test_e2e_fit_width_and_fit_page_and_visual_layout() {
         "Rendered canvas must contain text: {:?}",
         texts
     );
+}
+
+#[test]
+fn test_e2e_orientation_and_page_rotation_workflow() {
+    let pdf_bytes = generate_synthetic_visual_showcase_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("orientations.pdf".to_string()));
+
+    assert_eq!(app.total_pages, 4);
+    assert_eq!(app.current_page, 1);
+
+    // Initial page rotation is 0°
+    assert_eq!(app.session.as_ref().unwrap().pages[0].rotation_degrees, 0);
+
+    // 1. Rotate Page 1 Clockwise
+    app.rotate_current_page_clockwise();
+    assert_eq!(app.session.as_ref().unwrap().pages[0].rotation_degrees, 90);
+    assert_eq!(
+        app.session.as_ref().unwrap().pages[0].visual_dimensions(),
+        (841.89, 595.28)
+    );
+    assert!(app
+        .status_toast
+        .as_ref()
+        .unwrap()
+        .contains("Page 1 rotated to 90°"));
+
+    // Render frame and verify toast text
+    let ctx = Context::default();
+    let output1 = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let texts1 = extract_all_text_from_shapes(&output1.shapes);
+    assert!(texts1.iter().any(|t| t.contains("Page 1 rotated to 90°")));
+
+    // 2. Rotate Counter-Clockwise back to 0°
+    app.rotate_current_page_counter_clockwise();
+    assert_eq!(app.session.as_ref().unwrap().pages[0].rotation_degrees, 0);
+    assert_eq!(
+        app.session.as_ref().unwrap().pages[0].visual_dimensions(),
+        (595.28, 841.89)
+    );
+
+    // 3. Navigate to Page 2 (90° Landscape page)
+    app.current_page = 2;
+    assert_eq!(app.session.as_ref().unwrap().pages[1].rotation_degrees, 90);
+
+    // 4. Test Fit Width on rotated page
+    app.pending_fit = Some(FitMode::FitWidth);
+    let output2 = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(1000.0, 800.0),
+            )),
+            ..Default::default()
+        },
+        |ctx| {
+            app.render_ui(ctx);
+        },
+    );
+
+    assert!(app.zoom_level > 0.5 && app.zoom_level < 3.0);
+    let texts2 = extract_all_text_from_shapes(&output2.shapes);
+    assert!(texts2
+        .iter()
+        .any(|t| t.contains("LANDSCAPE MONITORING DASHBOARD")));
+}
+
+#[test]
+fn test_e2e_zoom_controls_and_responsive_fitting() {
+    let pdf_bytes = generate_synthetic_visual_showcase_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("zoom_test.pdf".to_string()));
+
+    assert_eq!(app.zoom_level, 1.0);
+
+    // Zoom In
+    app.zoom_in();
+    assert!(app.zoom_level > 1.14 && app.zoom_level < 1.16);
+
+    // Zoom Out
+    app.zoom_out();
+    assert!((app.zoom_level - 1.0).abs() < 0.05);
+
+    // Reset Zoom
+    app.zoom_level = 2.5;
+    app.reset_zoom();
+    assert_eq!(app.zoom_level, 1.0);
+
+    // Clamping min / max
+    app.set_zoom(0.001);
+    assert_eq!(app.zoom_level, 0.1);
+    app.set_zoom(99.0);
+    assert_eq!(app.zoom_level, 5.0);
+
+    // Responsive Fit Width & Fit Page across screen resolutions
+    let ctx = Context::default();
+    let test_screens = [
+        (3840.0, 2160.0), // 4K
+        (1920.0, 1080.0), // 1080p
+        (1280.0, 800.0),  // Laptop
+        (768.0, 1024.0),  // Tablet
+        (390.0, 844.0),   // Mobile
+    ];
+
+    for (w, h) in test_screens {
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(w, h),
+            )),
+            ..Default::default()
+        };
+
+        // Fit Width
+        app.pending_fit = Some(FitMode::FitWidth);
+        let _ = ctx.run(raw_input.clone(), |ctx| {
+            app.render_ui(ctx);
+        });
+        assert!(
+            app.zoom_level >= 0.1 && app.zoom_level <= 5.0,
+            "FitWidth zoom level must be clamped for resolution {}x{}: got {}",
+            w,
+            h,
+            app.zoom_level
+        );
+
+        // Fit Page
+        app.pending_fit = Some(FitMode::FitPage);
+        let _ = ctx.run(raw_input, |ctx| {
+            app.render_ui(ctx);
+        });
+        assert!(
+            app.zoom_level >= 0.1 && app.zoom_level <= 5.0,
+            "FitPage zoom level must be clamped for resolution {}x{}: got {}",
+            w,
+            h,
+            app.zoom_level
+        );
+    }
+}
+
+#[test]
+fn test_e2e_multi_page_search_navigation_and_visual_highlighting() {
+    let pdf_bytes = generate_synthetic_search_corpus_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("search_test.pdf".to_string()));
+
+    // 1. Execute search query
+    app.search_query = "ALPHA_SEARCH_TOKEN_42".to_string();
+    app.execute_search();
+
+    assert_eq!(app.search_results.len(), 1);
+    assert_eq!(app.sidebar_tab, SidebarTab::SearchResults);
+
+    // 2. Render UI and assert highlight is drawn
+    let ctx = Context::default();
+    let output1 = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+
+    let texts1 = extract_all_text_from_shapes(&output1.shapes);
+    assert!(texts1.iter().any(|t| t.contains("Found 1 matching pages:")));
+    assert!(texts1.iter().any(|t| t.contains("ALPHA_SEARCH_TOKEN_42")));
+
+    // Assert visual highlight rectangle is rendered with yellow highlight color
+    let has_yellow_highlight = has_rect_with_fill(
+        &output1.shapes,
+        Color32::from_rgba_unmultiplied(255, 235, 59, 140),
+    );
+    assert!(
+        has_yellow_highlight,
+        "Yellow highlight rect must be drawn behind matching search keyword on canvas"
+    );
+
+    // 3. Multi-occurrence search & navigation
+    app.search_query = "GAMMA_IBAN_SPANISH_ES91".to_string();
+    app.execute_search();
+    assert_eq!(app.search_results.len(), 1);
+    assert_eq!(app.search_results[0].page_index, 2);
+
+    // Click search result to navigate to page 3
+    app.current_page = (app.search_results[0].page_index as usize) + 1;
+    assert_eq!(app.current_page, 3);
+
+    let output2 = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let texts2 = extract_all_text_from_shapes(&output2.shapes);
+    assert!(texts2.iter().any(|t| t.contains("FACTURACIÓN")));
+    assert!(texts2.iter().any(|t| t.contains("GAMMA_IBAN_SPANISH_ES91")));
+}
+
+#[test]
+fn test_e2e_form_fill_interactive_lifecycle_and_roundtrip_saving() {
+    let pdf_bytes = generate_synthetic_forms_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("onboarding.pdf".to_string()));
+
+    assert_eq!(app.total_pages, 1);
+    app.active_tool = ActiveTool::FormFill;
+    app.sidebar_tab = SidebarTab::Forms;
+
+    // Render initial UI
+    let ctx = Context::default();
+    let output1 = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let texts1 = extract_all_text_from_shapes(&output1.shapes);
+    assert!(texts1.iter().any(|t| t.contains("Alice Montgomery")));
+    assert!(texts1.iter().any(|t| t.contains("Starlight Dynamics Corp")));
+    assert!(texts1.iter().any(|t| t.contains("European Union (GDPR)")));
+
+    // Interactively update forms
+    assert!(app
+        .session
+        .as_mut()
+        .unwrap()
+        .update_form_field("applicant_name", "Samantha Croft"));
+    assert!(app
+        .session
+        .as_mut()
+        .unwrap()
+        .update_form_field("accept_nda", "Off"));
+    assert!(app
+        .session
+        .as_mut()
+        .unwrap()
+        .update_form_field("subscribe_updates", "Yes"));
+    assert!(app
+        .session
+        .as_mut()
+        .unwrap()
+        .update_form_field("jurisdiction", "United Kingdom"));
+
+    // Save filled document to bytes
+    let saved_bytes = app
+        .session
+        .as_mut()
+        .unwrap()
+        .save_to_bytes()
+        .expect("Save filled PDF bytes");
+    assert!(!saved_bytes.is_empty());
+
+    // Load saved bytes into a second app instance
+    let mut app2 = KestrelApp::default();
+    app2.load_document_bytes(saved_bytes, Some("saved_onboarding.pdf".to_string()));
+    app2.active_tool = ActiveTool::FormFill;
+    app2.sidebar_tab = SidebarTab::Forms;
+
+    // Verify session data
+    let session2 = app2.session.as_ref().unwrap();
+    let app_field = session2
+        .forms
+        .iter()
+        .find(|f| f.name == "applicant_name")
+        .unwrap();
+    assert_eq!(app_field.value, "Samantha Croft");
+    let nda_field = session2
+        .forms
+        .iter()
+        .find(|f| f.name == "accept_nda")
+        .unwrap();
+    assert_eq!(nda_field.value, "Off");
+    let sub_field = session2
+        .forms
+        .iter()
+        .find(|f| f.name == "subscribe_updates")
+        .unwrap();
+    assert_eq!(sub_field.value, "Yes");
+    let jur_field = session2
+        .forms
+        .iter()
+        .find(|f| f.name == "jurisdiction")
+        .unwrap();
+    assert_eq!(jur_field.value, "United Kingdom");
+
+    // Render UI of app2 and assert modified values appear in the UI
+    let output2 = ctx.run(egui::RawInput::default(), |ctx| {
+        app2.render_ui(ctx);
+    });
+    let texts2 = extract_all_text_from_shapes(&output2.shapes);
+    assert!(texts2.iter().any(|t| t.contains("Samantha Croft")));
+    assert!(texts2.iter().any(|t| t.contains("United Kingdom")));
+}
+
+#[test]
+fn test_e2e_embedded_images_and_vector_graphics_rendering() {
+    let pdf_bytes = generate_synthetic_visual_showcase_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("showcase.pdf".to_string()));
+
+    let ctx = Context::default();
+    let output = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+
+    // 1. Assert embedded image was loaded into GPU texture map
+    assert_eq!(
+        app.image_textures.len(),
+        1,
+        "Embedded 16x16 raster image should be bound as GPU texture"
+    );
+
+    // 2. Assert vector header rectangle was painted with Deep Navy fill
+    let has_navy_header = has_rect_with_fill(&output.shapes, Color32::from_rgb(24, 43, 73));
+    assert!(
+        has_navy_header,
+        "Header vector rectangle must be painted with Color32(24, 43, 73)"
+    );
+
+    // 3. Assert title text is rendered
+    let texts = extract_all_text_from_shapes(&output.shapes);
+    assert!(texts
+        .iter()
+        .any(|t| t.contains("KESTREL-PDF VISUAL ENGINE SPECIFICATION")));
+}
+
+#[test]
+fn test_e2e_full_lifecycle_stress_session() {
+    use kestrel_core::sign::StrokePoint;
+
+    // 1. Initial empty state
+    let mut app = KestrelApp::default();
+    let ctx = Context::default();
+    let out_empty = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let texts_empty = extract_all_text_from_shapes(&out_empty.shapes);
+    assert!(texts_empty
+        .iter()
+        .any(|t| t.contains("Welcome to Kestrel-PDF")));
+
+    // 2. Load synthetic showcase PDF
+    let pdf_bytes = generate_synthetic_visual_showcase_pdf();
+    app.load_document_bytes(pdf_bytes, Some("full_stress.pdf".to_string()));
+    assert_eq!(app.total_pages, 4);
+
+    // 3. Page rotation & zoom
+    app.rotate_current_page_clockwise();
+    assert_eq!(app.session.as_ref().unwrap().pages[0].rotation_degrees, 90);
+    app.pending_fit = Some(FitMode::FitPage);
+
+    // 4. Full-text search
+    app.search_query = "Specification".to_string();
+    app.execute_search();
+    assert!(!app.search_results.is_empty());
+
+    // 5. Digital & visual signature flow
+    app.signature_modal_open = true;
+    app.signer_name_input = "Chief Architect John Doe".to_string();
+    app.signature_pad_current_stroke = vec![
+        StrokePoint::new(10.0, 10.0, 0.5),
+        StrokePoint::new(40.0, 50.0, 0.8),
+        StrokePoint::new(100.0, 20.0, 0.6),
+    ];
+    app.adopt_signature_from_pad();
+    app.place_adopted_signature(0, 200.0, 300.0);
+
+    // 6. Render UI frame
+    let out_full = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let texts_full = extract_all_text_from_shapes(&out_full.shapes);
+    assert!(texts_full.iter().any(|t| t.contains("PAdES")));
+
+    // 7. Save and verify serialized output
+    let saved = app
+        .session
+        .as_mut()
+        .unwrap()
+        .save_to_bytes()
+        .expect("Save stress PDF");
+    assert!(!saved.is_empty());
 }

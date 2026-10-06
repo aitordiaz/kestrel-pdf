@@ -14,6 +14,17 @@ pub struct PageInfo {
     pub rotation_degrees: u16,
 }
 
+impl PageInfo {
+    /// Returns the effective visual dimensions (width, height) accounting for 90° and 270° rotations.
+    pub fn visual_dimensions(&self) -> (f32, f32) {
+        if self.rotation_degrees % 180 == 90 {
+            (self.height_pt, self.width_pt)
+        } else {
+            (self.width_pt, self.height_pt)
+        }
+    }
+}
+
 /// Outline / Table of Contents entry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutlineItem {
@@ -52,6 +63,18 @@ pub struct VectorRect {
     pub stroke_width: f32,
 }
 
+/// Embedded raster image extracted from a PDF page content stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisualImage {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    pub rgba: Vec<u8>,
+}
+
 /// Visual layout representation of a single PDF page for high-fidelity rendering.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PageVisualLayout {
@@ -59,6 +82,7 @@ pub struct PageVisualLayout {
     pub height_pt: f32,
     pub text_runs: Vec<PositionedText>,
     pub rects: Vec<VectorRect>,
+    pub images: Vec<VisualImage>,
     pub plain_text: String,
 }
 
@@ -242,6 +266,17 @@ impl DocumentSession {
             }
         }
         false
+    }
+
+    /// Rotates the specified page clockwise (true) or counter-clockwise (false) by 90 degrees.
+    pub fn rotate_page(&mut self, page_index: usize, clockwise: bool) {
+        if let Some(page) = self.pages.get_mut(page_index) {
+            if clockwise {
+                page.rotation_degrees = (page.rotation_degrees + 90) % 360;
+            } else {
+                page.rotation_degrees = (page.rotation_degrees + 270) % 360;
+            }
+        }
     }
 
     /// Adds a new interactive form field.
@@ -676,6 +711,60 @@ fn decode_text_operands_string(
     output
 }
 
+/// Maps a PDF coordinate point (origin bottom-left) to visual top-left coordinates taking page rotation into account.
+pub fn map_pdf_point_to_visual(
+    x: f32,
+    y: f32,
+    page_w: f32,
+    page_h: f32,
+    rotation: u16,
+) -> (f32, f32) {
+    match rotation % 360 {
+        90 => (y, x),
+        180 => (page_w - x, y),
+        270 => (page_h - y, page_w - x),
+        _ => (x, page_h - y),
+    }
+}
+
+#[allow(clippy::chunks_exact_to_as_chunks)]
+fn convert_image_bytes_to_rgba(
+    raw_bytes: &[u8],
+    width: u32,
+    height: u32,
+    colorspace: &str,
+) -> Vec<u8> {
+    let pixel_count = (width * height) as usize;
+    let mut rgba = Vec::with_capacity(pixel_count * 4);
+
+    if colorspace.contains("RGB") || colorspace.is_empty() {
+        for chunk in raw_bytes.chunks_exact(3) {
+            rgba.push(chunk[0]);
+            rgba.push(chunk[1]);
+            rgba.push(chunk[2]);
+            rgba.push(255);
+        }
+    } else if colorspace.contains("Gray") {
+        for &g in raw_bytes.iter().take(pixel_count) {
+            rgba.push(g);
+            rgba.push(g);
+            rgba.push(g);
+            rgba.push(255);
+        }
+    } else if raw_bytes.len() >= pixel_count * 4 {
+        rgba.extend_from_slice(&raw_bytes[..pixel_count * 4]);
+    } else {
+        for _ in 0..pixel_count {
+            rgba.extend_from_slice(&[180, 180, 180, 255]);
+        }
+    }
+
+    if rgba.len() < pixel_count * 4 {
+        rgba.resize(pixel_count * 4, 255);
+    }
+    rgba
+}
+
 /// Extracts high-fidelity visual layout (positioned text runs and vector rects)
 /// from a PDF page's decompressed content stream.
 pub fn extract_page_layout(
@@ -718,7 +807,34 @@ pub fn extract_page_layout(
         }
     }
 
-    // 2. Decompress page content operations
+    // 2. Extract XObjects dictionary from page resources
+    let page_xobjects: std::collections::HashMap<Vec<u8>, lopdf::ObjectId> = {
+        let mut map = std::collections::HashMap::new();
+        if let Ok(page_dict) = doc.get_object(page_id).and_then(Object::as_dict) {
+            let res_opt = match page_dict.get(b"Resources") {
+                Ok(Object::Reference(r)) => doc.get_object(*r).and_then(Object::as_dict).ok(),
+                Ok(Object::Dictionary(d)) => Some(d),
+                _ => None,
+            };
+            if let Some(res) = res_opt {
+                let xobj_dict_opt = match res.get(b"XObject") {
+                    Ok(Object::Reference(r)) => doc.get_object(*r).and_then(Object::as_dict).ok(),
+                    Ok(Object::Dictionary(d)) => Some(d),
+                    _ => None,
+                };
+                if let Some(xobjs) = xobj_dict_opt {
+                    for (name, obj) in xobjs.iter() {
+                        if let Ok(ref_id) = obj.as_reference() {
+                            map.insert(name.clone(), ref_id);
+                        }
+                    }
+                }
+            }
+        }
+        map
+    };
+
+    // 3. Decompress page content operations
     let content_bytes = match get_page_content_decompressed(doc, page_id) {
         Ok(bytes) => bytes,
         Err(_) => doc.get_page_content(page_id).unwrap_or_default(),
@@ -726,6 +842,7 @@ pub fn extract_page_layout(
 
     let mut text_runs = Vec::new();
     let mut rects = Vec::new();
+    let mut images = Vec::new();
 
     if let Ok(content) = lopdf::content::Content::decode(&content_bytes) {
         let mut gstate = GraphicsGState::default();
@@ -1001,6 +1118,78 @@ pub fn extract_page_layout(
                 "n" => {
                     pending_rects.clear();
                 }
+                "Do" => {
+                    if let Some(op0) = operation.operands.first() {
+                        if let Ok(name_bytes) = op0.as_name() {
+                            if let Some(&xobj_id) = page_xobjects.get(name_bytes) {
+                                if let Ok(xobj_stream) =
+                                    doc.get_object(xobj_id).and_then(Object::as_stream)
+                                {
+                                    let is_img = xobj_stream
+                                        .dict
+                                        .get(b"Subtype")
+                                        .and_then(Object::as_name_str)
+                                        .map(|s| s == "Image")
+                                        .unwrap_or(false);
+                                    if is_img {
+                                        let pw = xobj_stream
+                                            .dict
+                                            .get(b"Width")
+                                            .and_then(Object::as_i64)
+                                            .unwrap_or(0)
+                                            as u32;
+                                        let ph = xobj_stream
+                                            .dict
+                                            .get(b"Height")
+                                            .and_then(Object::as_i64)
+                                            .unwrap_or(0)
+                                            as u32;
+                                        if pw > 0 && ph > 0 {
+                                            let raw_bytes = decompress_pdf_stream(xobj_stream)
+                                                .unwrap_or_else(|_| xobj_stream.content.clone());
+                                            let cs = xobj_stream
+                                                .dict
+                                                .get(b"ColorSpace")
+                                                .and_then(Object::as_name_str)
+                                                .unwrap_or("DeviceRGB");
+                                            let rgba =
+                                                convert_image_bytes_to_rgba(&raw_bytes, pw, ph, cs);
+                                            if !rgba.is_empty() {
+                                                let (wx, wy) =
+                                                    transform_point(&gstate.ctm, 0.0, 0.0);
+                                                let scale_w = (gstate.ctm[0].powi(2)
+                                                    + gstate.ctm[1].powi(2))
+                                                .sqrt()
+                                                .abs();
+                                                let scale_h = (gstate.ctm[2].powi(2)
+                                                    + gstate.ctm[3].powi(2))
+                                                .sqrt()
+                                                .abs();
+                                                images.push(VisualImage {
+                                                    x: wx - media_x0,
+                                                    y: wy - media_y0,
+                                                    width: if scale_w > 0.01 {
+                                                        scale_w
+                                                    } else {
+                                                        pw as f32
+                                                    },
+                                                    height: if scale_h > 0.01 {
+                                                        scale_h
+                                                    } else {
+                                                        ph as f32
+                                                    },
+                                                    pixel_width: pw,
+                                                    pixel_height: ph,
+                                                    rgba,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1043,6 +1232,7 @@ pub fn extract_page_layout(
         height_pt: page_height,
         text_runs,
         rects,
+        images,
         plain_text,
     }
 }
@@ -1218,7 +1408,24 @@ fn decode_single_string(
         return;
     }
 
-    // 3. Standard encoding / ASCII / WinAnsi
+    // 3. UTF-16BE with BOM
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let decoded = lopdf::Document::decode_text(encoding, bytes);
+        let sanitized = sanitize_extracted_text(&decoded);
+        output.push_str(&sanitized);
+        return;
+    }
+
+    // 4. Check for valid UTF-8
+    if let Ok(utf8_str) = std::str::from_utf8(bytes) {
+        let sanitized = sanitize_extracted_text(utf8_str);
+        if !sanitized.is_empty() {
+            output.push_str(&sanitized);
+            return;
+        }
+    }
+
+    // 5. Standard encoding / ASCII / WinAnsi fallback
     let decoded = lopdf::Document::decode_text(encoding, bytes);
     let sanitized = sanitize_extracted_text(&decoded);
     if !sanitized.is_empty() {
