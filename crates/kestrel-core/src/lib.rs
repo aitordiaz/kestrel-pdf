@@ -9,5 +9,9 @@ pub mod redact;
 pub mod render;
 pub mod sign;
 
-pub use document::{DocumentSession, OutlineItem, PageInfo, SearchResult};
+pub use document::{
+    decompress_pdf_stream, extract_page_layout, extract_page_text_robust,
+    get_page_content_decompressed, DocumentSession, OutlineItem, PageInfo, PageVisualLayout,
+    PositionedText, SearchResult, VectorRect,
+};
 pub use render::{PageTileKey, RenderPipeline, RenderTileRequest, TileBuffer, TileCache};

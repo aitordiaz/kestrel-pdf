@@ -30,6 +30,38 @@ pub struct SearchResult {
     pub match_count: usize,
 }
 
+/// Individual positioned text fragment extracted from a PDF content stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PositionedText {
+    pub text: String,
+    pub x: f32, // PDF points (y=0 at bottom-left of MediaBox)
+    pub y: f32, // PDF points (y=0 at bottom-left of MediaBox)
+    pub font_size: f32,
+    pub color: [u8; 3], // RGB [0..255]
+}
+
+/// Vector rectangle (shape, border, cell highlight) extracted from PDF graphics stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub fill_color: Option<[u8; 3]>,
+    pub stroke_color: Option<[u8; 3]>,
+    pub stroke_width: f32,
+}
+
+/// Visual layout representation of a single PDF page for high-fidelity rendering.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PageVisualLayout {
+    pub width_pt: f32,
+    pub height_pt: f32,
+    pub text_runs: Vec<PositionedText>,
+    pub rects: Vec<VectorRect>,
+    pub plain_text: String,
+}
+
 /// Represents an active document session with parsed geometry, forms, and signatures.
 pub struct DocumentSession {
     pub file_path: Option<PathBuf>,
@@ -37,6 +69,7 @@ pub struct DocumentSession {
     pub page_count: u16,
     pub pages: Vec<PageInfo>,
     pub page_texts: Vec<String>,
+    pub page_layouts: Vec<PageVisualLayout>,
     pub outlines: Vec<OutlineItem>,
     pub forms: Vec<FormField>,
     pub visual_signatures: Vec<VisualSignature>,
@@ -59,12 +92,15 @@ impl DocumentSession {
 
         let mut pages = Vec::new();
         let mut page_texts = Vec::new();
+        let mut page_layouts = Vec::new();
         let page_dict_map = doc.get_pages();
 
         for (page_num, object_id) in &page_dict_map {
             let mut width_pt = 595.28; // Standard A4 default
             let mut height_pt = 841.89;
             let mut rotation_degrees = 0;
+            let mut media_x0 = 0.0;
+            let mut media_y0 = 0.0;
 
             if let Ok(page_obj) = doc.get_object(*object_id) {
                 if let Ok(dict) = page_obj.as_dict() {
@@ -75,6 +111,8 @@ impl DocumentSession {
                             let y0 = mediabox[1].as_float().unwrap_or(0.0);
                             let x1 = mediabox[2].as_float().unwrap_or(595.28);
                             let y1 = mediabox[3].as_float().unwrap_or(841.89);
+                            media_x0 = x0;
+                            media_y0 = y0;
                             width_pt = (x1 - x0).abs();
                             height_pt = (y1 - y0).abs();
                         }
@@ -94,9 +132,11 @@ impl DocumentSession {
                 rotation_degrees,
             });
 
-            // Extract page text robustly
-            let text = extract_page_text_robust(&doc, *page_num);
-            page_texts.push(text);
+            // Extract page visual layout and robust text
+            let layout =
+                extract_page_layout(&doc, *object_id, width_pt, height_pt, media_x0, media_y0);
+            page_texts.push(layout.plain_text.clone());
+            page_layouts.push(layout);
         }
 
         let page_count = pages.len() as u16;
@@ -128,6 +168,7 @@ impl DocumentSession {
             page_count,
             pages,
             page_texts,
+            page_layouts,
             outlines,
             forms,
             visual_signatures: Vec::new(),
@@ -138,6 +179,11 @@ impl DocumentSession {
     /// Returns the text content for a given page index.
     pub fn get_page_text(&self, page_index: usize) -> Option<&str> {
         self.page_texts.get(page_index).map(|s| s.as_str())
+    }
+
+    /// Returns the visual layout for a given page index.
+    pub fn get_page_layout(&self, page_index: usize) -> Option<&PageVisualLayout> {
+        self.page_layouts.get(page_index)
     }
 
     /// Returns the aspect ratio (width / height) of the specified page.
@@ -280,14 +326,366 @@ impl DocumentSession {
     }
 }
 
-/// Extracts page text robustly, decoding Identity-H and ToUnicode CMaps while sanitizing any unimplemented tags.
-pub fn extract_page_text_robust(doc: &lopdf::Document, page_num: u32) -> String {
-    let pages = doc.get_pages();
-    let page_id = match pages.get(&page_num) {
-        Some(&id) => id,
-        None => return String::new(),
+/// Decodes an ASCII85 (Adobe variant) encoded byte slice.
+pub fn decode_ascii85(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut count = 0;
+    let mut tuple = 0u32;
+    for &b in input {
+        if b == b'~' {
+            break;
+        }
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        if b == b'z' && count == 0 {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+            continue;
+        }
+        if (b'!'..=b'u').contains(&b) {
+            tuple = tuple * 85 + (b - b'!') as u32;
+            count += 1;
+            if count == 5 {
+                out.extend_from_slice(&tuple.to_be_bytes());
+                tuple = 0;
+                count = 0;
+            }
+        }
+    }
+    if count > 0 {
+        let padding = 5 - count;
+        for _ in 0..padding {
+            tuple = tuple * 85 + 84;
+        }
+        let bytes = tuple.to_be_bytes();
+        out.extend_from_slice(&bytes[..count - 1]);
+    }
+    out
+}
+
+/// Decodes an ASCII Hex encoded byte slice.
+pub fn decode_ascii_hex(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut first_nibble = None;
+    for &b in input {
+        if b == b'>' {
+            break;
+        }
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        let nibble = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => continue,
+        };
+        match first_nibble {
+            None => first_nibble = Some(nibble),
+            Some(high) => {
+                out.push((high << 4) | nibble);
+                first_nibble = None;
+            }
+        }
+    }
+    if let Some(high) = first_nibble {
+        out.push(high << 4);
+    }
+    out
+}
+
+/// Decodes a Flate (zlib or raw deflate) compressed byte slice.
+pub fn decode_flate(input: &[u8]) -> Result<Vec<u8>> {
+    use flate2::read::{DeflateDecoder, ZlibDecoder};
+    use std::io::Read;
+
+    let mut zlib = ZlibDecoder::new(input);
+    let mut out = Vec::new();
+    if zlib.read_to_end(&mut out).is_ok() && !out.is_empty() {
+        return Ok(out);
+    }
+
+    let mut deflate = DeflateDecoder::new(input);
+    let mut out = Vec::new();
+    deflate
+        .read_to_end(&mut out)
+        .context("Flate decompression failed")?;
+    Ok(out)
+}
+
+/// Decompresses a PDF stream applying all filters in sequential decoding order.
+pub fn decompress_pdf_stream(stream: &lopdf::Stream) -> Result<Vec<u8>> {
+    let filter_obj = match stream.dict.get(b"Filter") {
+        Ok(obj) => obj,
+        Err(_) => return Ok(stream.content.clone()),
     };
 
+    let mut filters = Vec::new();
+    match filter_obj {
+        Object::Name(name) => {
+            filters.push(String::from_utf8_lossy(name).to_string());
+        }
+        Object::Array(arr) => {
+            for item in arr {
+                if let Ok(name) = item.as_name_str() {
+                    filters.push(name.to_string());
+                }
+            }
+        }
+        _ => return Ok(stream.content.clone()),
+    }
+
+    if filters.is_empty() {
+        return Ok(stream.content.clone());
+    }
+
+    let mut current_data = stream.content.clone();
+    for filter in &filters {
+        match filter.as_str() {
+            "ASCII85Decode" | "A85" => {
+                current_data = decode_ascii85(&current_data);
+            }
+            "ASCIIHexDecode" | "AHx" => {
+                current_data = decode_ascii_hex(&current_data);
+            }
+            "FlateDecode" | "Fl" => match decode_flate(&current_data) {
+                Ok(decompressed) => current_data = decompressed,
+                Err(_) => {
+                    if let Ok(native) = stream.decompressed_content() {
+                        return Ok(native);
+                    }
+                }
+            },
+            "LZWDecode" | "LZW" => {
+                if let Ok(native) = stream.decompressed_content() {
+                    return Ok(native);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(current_data)
+}
+
+/// Extracts and decompresses the complete content stream for a given page.
+pub fn get_page_content_decompressed(
+    doc: &lopdf::Document,
+    page_id: lopdf::ObjectId,
+) -> Result<Vec<u8>> {
+    let page_obj = doc.get_object(page_id).context("Page object not found")?;
+    let page_dict = page_obj.as_dict().context("Page object is not a dict")?;
+    let contents = match page_dict.get(b"Contents") {
+        Ok(c) => c,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut stream_ids = Vec::new();
+    match contents {
+        Object::Reference(id) => stream_ids.push(*id),
+        Object::Array(arr) => {
+            for item in arr {
+                if let Object::Reference(id) = item {
+                    stream_ids.push(*id);
+                }
+            }
+        }
+        Object::Stream(s) => return decompress_pdf_stream(s),
+        _ => return Ok(Vec::new()),
+    }
+
+    let mut result = Vec::new();
+    for (i, sid) in stream_ids.iter().enumerate() {
+        if let Ok(obj) = doc.get_object(*sid) {
+            if let Ok(stream) = obj.as_stream() {
+                if let Ok(decompressed) = decompress_pdf_stream(stream) {
+                    if i > 0 && !result.is_empty() {
+                        result.push(b'\n');
+                    }
+                    result.extend_from_slice(&decompressed);
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+#[derive(Clone)]
+struct GraphicsGState {
+    ctm: [f32; 6],
+    fill_color: [u8; 3],
+    stroke_color: [u8; 3],
+    line_width: f32,
+}
+
+impl Default for GraphicsGState {
+    fn default() -> Self {
+        Self {
+            ctm: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            fill_color: [0, 0, 0],
+            stroke_color: [0, 0, 0],
+            line_width: 1.0,
+        }
+    }
+}
+
+fn get_op_float(obj: &Object) -> f32 {
+    obj.as_float().unwrap_or(0.0)
+}
+
+fn float_to_u8(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+fn cmyk_to_rgb(c: f32, m: f32, y: f32, k: f32) -> [u8; 3] {
+    let r = ((1.0 - c) * (1.0 - k)).clamp(0.0, 1.0) * 255.0;
+    let g = ((1.0 - m) * (1.0 - k)).clamp(0.0, 1.0) * 255.0;
+    let b = ((1.0 - y) * (1.0 - k)).clamp(0.0, 1.0) * 255.0;
+    [r.round() as u8, g.round() as u8, b.round() as u8]
+}
+
+fn multiply_matrix(m1: &[f32; 6], m2: &[f32; 6]) -> [f32; 6] {
+    [
+        m1[0] * m2[0] + m1[1] * m2[2],
+        m1[0] * m2[1] + m1[1] * m2[3],
+        m1[2] * m2[0] + m1[3] * m2[2],
+        m1[2] * m2[1] + m1[3] * m2[3],
+        m1[4] * m2[0] + m1[5] * m2[2] + m2[4],
+        m1[4] * m2[1] + m1[5] * m2[3] + m2[5],
+    ]
+}
+
+fn transform_point(m: &[f32; 6], x: f32, y: f32) -> (f32, f32) {
+    (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5])
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_vector_rect(
+    rects: &mut Vec<VectorRect>,
+    rx: f32,
+    ry: f32,
+    rw: f32,
+    rh: f32,
+    gstate: &GraphicsGState,
+    media_x0: f32,
+    media_y0: f32,
+    fill: bool,
+    stroke: bool,
+) {
+    let (p0_x, p0_y) = transform_point(&gstate.ctm, rx, ry);
+    let (p1_x, p1_y) = transform_point(&gstate.ctm, rx + rw, ry + rh);
+    let min_x = p0_x.min(p1_x) - media_x0;
+    let min_y = p0_y.min(p1_y) - media_y0;
+    let width = (p1_x - p0_x).abs();
+    let height = (p1_y - p0_y).abs();
+
+    if width > 0.5 && height > 0.5 {
+        rects.push(VectorRect {
+            x: min_x,
+            y: min_y,
+            width,
+            height,
+            fill_color: if fill { Some(gstate.fill_color) } else { None },
+            stroke_color: if stroke {
+                Some(gstate.stroke_color)
+            } else {
+                None
+            },
+            stroke_width: if stroke { gstate.line_width } else { 0.0 },
+        });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_text_run(
+    text_runs: &mut Vec<PositionedText>,
+    operands: &[lopdf::Object],
+    current_font: &[u8],
+    font_cmaps: &std::collections::HashMap<Vec<u8>, std::collections::HashMap<u16, String>>,
+    font_encodings: &std::collections::HashMap<Vec<u8>, String>,
+    text_matrix: &mut [f32; 6],
+    gstate: &GraphicsGState,
+    current_font_size: f32,
+    media_x0: f32,
+    media_y0: f32,
+) {
+    let raw_text = decode_text_operands_string(operands, current_font, font_cmaps, font_encodings);
+    let text = sanitize_extracted_text(&raw_text);
+    if !text.trim().is_empty() {
+        let (wx, wy) = transform_point(&gstate.ctm, text_matrix[4], text_matrix[5]);
+        let x = wx - media_x0;
+        let y = wy - media_y0;
+        let scale_tm = (text_matrix[0].powi(2) + text_matrix[1].powi(2)).sqrt();
+        let scale_ctm = (gstate.ctm[0].powi(2) + gstate.ctm[1].powi(2)).sqrt();
+        let total_scale = (scale_tm * scale_ctm).abs();
+        let effective_size = if total_scale > 0.01 {
+            current_font_size * total_scale
+        } else {
+            current_font_size
+        };
+
+        text_runs.push(PositionedText {
+            text: text.clone(),
+            x,
+            y,
+            font_size: effective_size,
+            color: gstate.fill_color,
+        });
+
+        // Advance x position in text matrix
+        let advance = (text.chars().count() as f32) * effective_size * 0.52;
+        text_matrix[4] += advance;
+    }
+}
+
+fn decode_text_operands_string(
+    operands: &[lopdf::Object],
+    current_font: &[u8],
+    font_cmaps: &std::collections::HashMap<Vec<u8>, std::collections::HashMap<u16, String>>,
+    font_encodings: &std::collections::HashMap<Vec<u8>, String>,
+) -> String {
+    let mut output = String::new();
+    let cmap_opt = font_cmaps.get(current_font);
+    let encoding_opt = font_encodings.get(current_font).map(|s| s.as_str());
+
+    for op in operands {
+        match op {
+            lopdf::Object::String(bytes, _) => {
+                decode_single_string(&mut output, bytes, cmap_opt, encoding_opt);
+            }
+            lopdf::Object::Array(arr) => {
+                for item in arr {
+                    match item {
+                        lopdf::Object::String(bytes, _) => {
+                            decode_single_string(&mut output, bytes, cmap_opt, encoding_opt);
+                        }
+                        lopdf::Object::Integer(i) if *i < -120 => {
+                            output.push(' ');
+                        }
+                        lopdf::Object::Real(r) if *r < -120.0 => {
+                            output.push(' ');
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    output
+}
+
+/// Extracts high-fidelity visual layout (positioned text runs and vector rects)
+/// from a PDF page's decompressed content stream.
+pub fn extract_page_layout(
+    doc: &lopdf::Document,
+    page_id: lopdf::ObjectId,
+    page_width: f32,
+    page_height: f32,
+    media_x0: f32,
+    media_y0: f32,
+) -> PageVisualLayout {
     // 1. Extract font ToUnicode CMaps and encodings for this page
     let fonts = doc.get_page_fonts(page_id);
     let mut font_cmaps: std::collections::HashMap<Vec<u8>, std::collections::HashMap<u16, String>> =
@@ -310,9 +708,8 @@ pub fn extract_page_text_robust(doc: &lopdf::Document, page_num: u32) -> String 
             };
 
             if let Some(stream) = stream {
-                let stream_bytes = stream
-                    .decompressed_content()
-                    .unwrap_or_else(|_| stream.content.clone());
+                let stream_bytes =
+                    decompress_pdf_stream(stream).unwrap_or_else(|_| stream.content.clone());
                 let cmap = parse_to_unicode_cmap(&stream_bytes);
                 if !cmap.is_empty() {
                     font_cmaps.insert(font_name.clone(), cmap);
@@ -321,62 +718,369 @@ pub fn extract_page_text_robust(doc: &lopdf::Document, page_num: u32) -> String 
         }
     }
 
-    // 2. Decode page content operations
-    if let Ok(content_bytes) = doc.get_page_content(page_id) {
-        if let Ok(content) = lopdf::content::Content::decode(&content_bytes) {
-            let mut extracted = String::new();
-            let mut current_font = Vec::new();
+    // 2. Decompress page content operations
+    let content_bytes = match get_page_content_decompressed(doc, page_id) {
+        Ok(bytes) => bytes,
+        Err(_) => doc.get_page_content(page_id).unwrap_or_default(),
+    };
 
-            for operation in &content.operations {
-                match operation.operator.as_str() {
-                    "Tf" => {
-                        if let Some(font_obj) = operation.operands.first() {
-                            if let Ok(f_name) = font_obj.as_name() {
-                                current_font = f_name.to_vec();
-                            }
-                        }
+    let mut text_runs = Vec::new();
+    let mut rects = Vec::new();
+
+    if let Ok(content) = lopdf::content::Content::decode(&content_bytes) {
+        let mut gstate = GraphicsGState::default();
+        let mut gstate_stack = Vec::new();
+
+        let mut text_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let mut line_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let mut current_font = Vec::new();
+        let mut current_font_size = 12.0f32;
+        let mut current_leading = 12.0f32;
+
+        let mut pending_rects: Vec<(f32, f32, f32, f32)> = Vec::new();
+
+        for operation in &content.operations {
+            match operation.operator.as_str() {
+                // Graphics state save / restore
+                "q" => {
+                    gstate_stack.push(gstate.clone());
+                }
+                "Q" => {
+                    if let Some(restored) = gstate_stack.pop() {
+                        gstate = restored;
                     }
-                    "Tj" | "TJ" => {
-                        decode_text_operands(
-                            &mut extracted,
-                            &operation.operands,
-                            &current_font,
-                            &font_cmaps,
-                            &font_encodings,
-                        );
+                }
+                // Concatenate matrix to CTM
+                "cm" => {
+                    if operation.operands.len() >= 6 {
+                        let m = [
+                            get_op_float(&operation.operands[0]),
+                            get_op_float(&operation.operands[1]),
+                            get_op_float(&operation.operands[2]),
+                            get_op_float(&operation.operands[3]),
+                            get_op_float(&operation.operands[4]),
+                            get_op_float(&operation.operands[5]),
+                        ];
+                        gstate.ctm = multiply_matrix(&m, &gstate.ctm);
                     }
-                    "ET" | "T*" => {
-                        if !extracted.ends_with('\n') {
-                            extracted.push('\n');
-                        }
+                }
+                // Colors
+                "rg" => {
+                    if operation.operands.len() >= 3 {
+                        let r = get_op_float(&operation.operands[0]);
+                        let g = get_op_float(&operation.operands[1]);
+                        let b = get_op_float(&operation.operands[2]);
+                        gstate.fill_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
                     }
-                    "'" | "\"" => {
-                        extracted.push('\n');
-                        decode_text_operands(
-                            &mut extracted,
-                            &operation.operands,
-                            &current_font,
-                            &font_cmaps,
-                            &font_encodings,
-                        );
+                }
+                "RG" => {
+                    if operation.operands.len() >= 3 {
+                        let r = get_op_float(&operation.operands[0]);
+                        let g = get_op_float(&operation.operands[1]);
+                        let b = get_op_float(&operation.operands[2]);
+                        gstate.stroke_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
+                    }
+                }
+                "g" => {
+                    if let Some(op0) = operation.operands.first() {
+                        let val = float_to_u8(get_op_float(op0));
+                        gstate.fill_color = [val, val, val];
+                    }
+                }
+                "G" => {
+                    if let Some(op0) = operation.operands.first() {
+                        let val = float_to_u8(get_op_float(op0));
+                        gstate.stroke_color = [val, val, val];
+                    }
+                }
+                "k" => {
+                    if operation.operands.len() >= 4 {
+                        let c = get_op_float(&operation.operands[0]);
+                        let m = get_op_float(&operation.operands[1]);
+                        let y = get_op_float(&operation.operands[2]);
+                        let k = get_op_float(&operation.operands[3]);
+                        gstate.fill_color = cmyk_to_rgb(c, m, y, k);
+                    }
+                }
+                "K" => {
+                    if operation.operands.len() >= 4 {
+                        let c = get_op_float(&operation.operands[0]);
+                        let m = get_op_float(&operation.operands[1]);
+                        let y = get_op_float(&operation.operands[2]);
+                        let k = get_op_float(&operation.operands[3]);
+                        gstate.stroke_color = cmyk_to_rgb(c, m, y, k);
+                    }
+                }
+                "sc" | "scn" => match operation.operands.len() {
+                    1 => {
+                        let val = float_to_u8(get_op_float(&operation.operands[0]));
+                        gstate.fill_color = [val, val, val];
+                    }
+                    3 => {
+                        let r = get_op_float(&operation.operands[0]);
+                        let g = get_op_float(&operation.operands[1]);
+                        let b = get_op_float(&operation.operands[2]);
+                        gstate.fill_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
+                    }
+                    4 => {
+                        let c = get_op_float(&operation.operands[0]);
+                        let m = get_op_float(&operation.operands[1]);
+                        let y = get_op_float(&operation.operands[2]);
+                        let k = get_op_float(&operation.operands[3]);
+                        gstate.fill_color = cmyk_to_rgb(c, m, y, k);
                     }
                     _ => {}
+                },
+                "SC" | "SCN" => match operation.operands.len() {
+                    1 => {
+                        let val = float_to_u8(get_op_float(&operation.operands[0]));
+                        gstate.stroke_color = [val, val, val];
+                    }
+                    3 => {
+                        let r = get_op_float(&operation.operands[0]);
+                        let g = get_op_float(&operation.operands[1]);
+                        let b = get_op_float(&operation.operands[2]);
+                        gstate.stroke_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
+                    }
+                    4 => {
+                        let c = get_op_float(&operation.operands[0]);
+                        let m = get_op_float(&operation.operands[1]);
+                        let y = get_op_float(&operation.operands[2]);
+                        let k = get_op_float(&operation.operands[3]);
+                        gstate.stroke_color = cmyk_to_rgb(c, m, y, k);
+                    }
+                    _ => {}
+                },
+                "w" => {
+                    if let Some(op0) = operation.operands.first() {
+                        gstate.line_width = get_op_float(op0).max(0.2);
+                    }
                 }
-            }
-
-            let cleaned = sanitize_extracted_text(&extracted);
-            if !cleaned.trim().is_empty() {
-                return cleaned;
+                // Text object operators
+                "BT" => {
+                    text_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+                    line_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+                }
+                "ET" => {}
+                "Tf" => {
+                    if let Some(font_obj) = operation.operands.first() {
+                        if let Ok(f_name) = font_obj.as_name() {
+                            current_font = f_name.to_vec();
+                        }
+                    }
+                    if operation.operands.len() >= 2 {
+                        current_font_size = get_op_float(&operation.operands[1]).max(1.0);
+                    }
+                }
+                "TL" => {
+                    if let Some(op0) = operation.operands.first() {
+                        current_leading = get_op_float(op0);
+                    }
+                }
+                "Tm" => {
+                    if operation.operands.len() >= 6 {
+                        text_matrix = [
+                            get_op_float(&operation.operands[0]),
+                            get_op_float(&operation.operands[1]),
+                            get_op_float(&operation.operands[2]),
+                            get_op_float(&operation.operands[3]),
+                            get_op_float(&operation.operands[4]),
+                            get_op_float(&operation.operands[5]),
+                        ];
+                        line_matrix = text_matrix;
+                    }
+                }
+                "Td" => {
+                    if operation.operands.len() >= 2 {
+                        let tx = get_op_float(&operation.operands[0]);
+                        let ty = get_op_float(&operation.operands[1]);
+                        line_matrix = multiply_matrix(&[1.0, 0.0, 0.0, 1.0, tx, ty], &line_matrix);
+                        text_matrix = line_matrix;
+                    }
+                }
+                "TD" => {
+                    if operation.operands.len() >= 2 {
+                        let tx = get_op_float(&operation.operands[0]);
+                        let ty = get_op_float(&operation.operands[1]);
+                        current_leading = -ty;
+                        line_matrix = multiply_matrix(&[1.0, 0.0, 0.0, 1.0, tx, ty], &line_matrix);
+                        text_matrix = line_matrix;
+                    }
+                }
+                "T*" => {
+                    line_matrix =
+                        multiply_matrix(&[1.0, 0.0, 0.0, 1.0, 0.0, -current_leading], &line_matrix);
+                    text_matrix = line_matrix;
+                }
+                "'" => {
+                    line_matrix =
+                        multiply_matrix(&[1.0, 0.0, 0.0, 1.0, 0.0, -current_leading], &line_matrix);
+                    text_matrix = line_matrix;
+                    emit_text_run(
+                        &mut text_runs,
+                        &operation.operands,
+                        &current_font,
+                        &font_cmaps,
+                        &font_encodings,
+                        &mut text_matrix,
+                        &gstate,
+                        current_font_size,
+                        media_x0,
+                        media_y0,
+                    );
+                }
+                "\"" => {
+                    if operation.operands.len() >= 3 {
+                        line_matrix = multiply_matrix(
+                            &[1.0, 0.0, 0.0, 1.0, 0.0, -current_leading],
+                            &line_matrix,
+                        );
+                        text_matrix = line_matrix;
+                        emit_text_run(
+                            &mut text_runs,
+                            &operation.operands[2..],
+                            &current_font,
+                            &font_cmaps,
+                            &font_encodings,
+                            &mut text_matrix,
+                            &gstate,
+                            current_font_size,
+                            media_x0,
+                            media_y0,
+                        );
+                    }
+                }
+                "Tj" | "TJ" => {
+                    emit_text_run(
+                        &mut text_runs,
+                        &operation.operands,
+                        &current_font,
+                        &font_cmaps,
+                        &font_encodings,
+                        &mut text_matrix,
+                        &gstate,
+                        current_font_size,
+                        media_x0,
+                        media_y0,
+                    );
+                }
+                // Path construction & painting
+                "re" => {
+                    if operation.operands.len() >= 4 {
+                        let rx = get_op_float(&operation.operands[0]);
+                        let ry = get_op_float(&operation.operands[1]);
+                        let rw = get_op_float(&operation.operands[2]);
+                        let rh = get_op_float(&operation.operands[3]);
+                        pending_rects.push((rx, ry, rw, rh));
+                    }
+                }
+                "f" | "f*" | "F" => {
+                    for &(rx, ry, rw, rh) in &pending_rects {
+                        emit_vector_rect(
+                            &mut rects, rx, ry, rw, rh, &gstate, media_x0, media_y0, true, false,
+                        );
+                    }
+                    pending_rects.clear();
+                }
+                "s" | "S" => {
+                    for &(rx, ry, rw, rh) in &pending_rects {
+                        emit_vector_rect(
+                            &mut rects, rx, ry, rw, rh, &gstate, media_x0, media_y0, false, true,
+                        );
+                    }
+                    pending_rects.clear();
+                }
+                "b" | "B" | "b*" | "B*" => {
+                    for &(rx, ry, rw, rh) in &pending_rects {
+                        emit_vector_rect(
+                            &mut rects, rx, ry, rw, rh, &gstate, media_x0, media_y0, true, true,
+                        );
+                    }
+                    pending_rects.clear();
+                }
+                "n" => {
+                    pending_rects.clear();
+                }
+                _ => {}
             }
         }
     }
 
-    // 3. Fallback: lopdf built-in extraction, strictly stripped of any Identity-H Unimplemented tags
+    // Generate plain_text from text runs
+    let mut plain_text = String::new();
+    if !text_runs.is_empty() {
+        let mut sorted = text_runs.clone();
+        sorted.sort_by(|a, b| {
+            let band_a = -(a.y / 4.0).round() as i32;
+            let band_b = -(b.y / 4.0).round() as i32;
+            band_a
+                .cmp(&band_b)
+                .then_with(|| (a.x as i32).cmp(&(b.x as i32)))
+        });
+
+        let mut last_band = None;
+        for tr in &sorted {
+            let band = -(tr.y / 4.0).round() as i32;
+            if let Some(lb) = last_band {
+                if band != lb {
+                    plain_text.push('\n');
+                } else {
+                    plain_text.push(' ');
+                }
+            }
+            plain_text.push_str(&tr.text);
+            last_band = Some(band);
+        }
+    } else {
+        // Fallback: use lopdf native extract_text if available
+        if let Ok(fallback) = doc.extract_text(&[page_id.0]) {
+            plain_text = sanitize_extracted_text(&fallback);
+        }
+    }
+
+    PageVisualLayout {
+        width_pt: page_width,
+        height_pt: page_height,
+        text_runs,
+        rects,
+        plain_text,
+    }
+}
+
+/// Extracts page text robustly, decoding Identity-H and ToUnicode CMaps while sanitizing any unimplemented tags.
+pub fn extract_page_text_robust(doc: &lopdf::Document, page_num: u32) -> String {
+    let pages = doc.get_pages();
+    let page_id = match pages.get(&page_num) {
+        Some(&id) => id,
+        None => return String::new(),
+    };
+
+    let layout = extract_page_layout(doc, page_id, 595.28, 841.89, 0.0, 0.0);
+    if !layout.plain_text.trim().is_empty() {
+        return layout.plain_text;
+    }
+
+    // Fallback: lopdf built-in extraction, strictly stripped of any Identity-H Unimplemented tags
     let fallback = doc.extract_text(&[page_num]).unwrap_or_default();
     sanitize_extracted_text(&fallback)
 }
 
-fn parse_to_unicode_cmap(bytes: &[u8]) -> std::collections::HashMap<u16, String> {
+fn extract_hex_tokens(line: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('<') {
+        if let Some(end) = rest[start..].find('>') {
+            let hex = &rest[start + 1..start + end];
+            tokens.push(hex.trim());
+            rest = &rest[start + end + 1..];
+        } else {
+            break;
+        }
+    }
+    tokens
+}
+
+pub fn parse_to_unicode_cmap(bytes: &[u8]) -> std::collections::HashMap<u16, String> {
     let mut cmap = std::collections::HashMap::new();
     let text = String::from_utf8_lossy(bytes);
 
@@ -405,14 +1109,11 @@ fn parse_to_unicode_cmap(bytes: &[u8]) -> std::collections::HashMap<u16, String>
         }
 
         if in_bfchar {
-            let tokens: Vec<&str> = trimmed
-                .split_whitespace()
-                .filter(|t| t.starts_with('<') && t.ends_with('>'))
-                .collect();
+            let tokens = extract_hex_tokens(trimmed);
             for chunk in tokens.chunks(2) {
                 if chunk.len() == 2 {
-                    let src_hex = chunk[0].trim_matches(|c| c == '<' || c == '>');
-                    let dst_hex = chunk[1].trim_matches(|c| c == '<' || c == '>');
+                    let src_hex = chunk[0];
+                    let dst_hex = chunk[1];
                     if let Ok(src_code) = u16::from_str_radix(src_hex, 16) {
                         let dst_str = hex_to_utf16_string(dst_hex);
                         if !dst_str.is_empty() {
@@ -424,14 +1125,11 @@ fn parse_to_unicode_cmap(bytes: &[u8]) -> std::collections::HashMap<u16, String>
         }
 
         if in_bfrange {
-            let tokens: Vec<&str> = trimmed
-                .split_whitespace()
-                .filter(|t| t.starts_with('<') && t.ends_with('>'))
-                .collect();
+            let tokens = extract_hex_tokens(trimmed);
             if tokens.len() == 3 {
-                let start_hex = tokens[0].trim_matches(|c| c == '<' || c == '>');
-                let end_hex = tokens[1].trim_matches(|c| c == '<' || c == '>');
-                let dst_start_hex = tokens[2].trim_matches(|c| c == '<' || c == '>');
+                let start_hex = tokens[0];
+                let end_hex = tokens[1];
+                let dst_start_hex = tokens[2];
                 if let (Ok(start), Ok(end), Ok(dst_start)) = (
                     u16::from_str_radix(start_hex, 16),
                     u16::from_str_radix(end_hex, 16),
@@ -469,42 +1167,6 @@ fn hex_to_utf16_string(hex: &str) -> String {
         (byte_val as char).to_string()
     } else {
         String::new()
-    }
-}
-
-fn decode_text_operands(
-    output: &mut String,
-    operands: &[lopdf::Object],
-    current_font: &[u8],
-    font_cmaps: &std::collections::HashMap<Vec<u8>, std::collections::HashMap<u16, String>>,
-    font_encodings: &std::collections::HashMap<Vec<u8>, String>,
-) {
-    let cmap_opt = font_cmaps.get(current_font);
-    let encoding_opt = font_encodings.get(current_font).map(|s| s.as_str());
-
-    for op in operands {
-        match op {
-            lopdf::Object::String(bytes, _) => {
-                decode_single_string(output, bytes, cmap_opt, encoding_opt);
-            }
-            lopdf::Object::Array(arr) => {
-                for item in arr {
-                    match item {
-                        lopdf::Object::String(bytes, _) => {
-                            decode_single_string(output, bytes, cmap_opt, encoding_opt);
-                        }
-                        lopdf::Object::Integer(i) if *i < -100 => {
-                            output.push(' ');
-                        }
-                        lopdf::Object::Real(r) if *r < -100.0 => {
-                            output.push(' ');
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
     }
 }
 

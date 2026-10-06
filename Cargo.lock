@@ -1704,6 +1704,7 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
+ "flate2",
  "image",
  "lopdf",
  "lru",
