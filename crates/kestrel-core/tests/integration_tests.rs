@@ -184,3 +184,143 @@ fn test_integration_true_redaction_pipeline() {
         .expect("Sanitized PDF must be valid and re-parsable by lopdf");
     assert!(!doc.get_pages().is_empty());
 }
+
+#[test]
+fn test_integration_acroform_parsing_editing_and_serialization() {
+    use kestrel_core::forms::FormField;
+
+    let base_pdf = create_test_pdf_bytes("Contract Agreement for Services");
+    let mut session =
+        DocumentSession::open_from_bytes(base_pdf, None).expect("Open base PDF session");
+
+    // Add interactive form fields
+    let name_field = FormField::new_text(
+        "client_name",
+        "Client Name",
+        0,
+        "John Doe",
+        [50.0, 600.0, 250.0, 624.0],
+        false,
+    );
+    let agree_check = FormField::new_checkbox(
+        "terms_agreed",
+        "Terms Agreed",
+        0,
+        true,
+        [50.0, 560.0, 70.0, 580.0],
+    );
+    let plan_choice = FormField::new_choice(
+        "plan_selection",
+        "Plan Selection",
+        0,
+        vec!["Standard".into(), "Enterprise".into(), "Custom".into()],
+        Some(1),
+        [50.0, 520.0, 200.0, 544.0],
+    );
+
+    session.add_form_field(name_field);
+    session.add_form_field(agree_check);
+    session.add_form_field(plan_choice);
+
+    assert_eq!(session.forms.len(), 3);
+
+    // Update field values
+    assert!(session.update_form_field("Client Name", "Jane Doe"));
+    assert!(session.update_form_field("Terms Agreed", "Off"));
+    assert!(session.update_form_field("Plan Selection", "Enterprise"));
+
+    // Save document to serialized bytes
+    let serialized_bytes = session.save_to_bytes().expect("Save filled form PDF");
+    assert!(!serialized_bytes.is_empty());
+
+    // Reopen in fresh DocumentSession and verify persistence
+    let reloaded_session =
+        DocumentSession::open_from_bytes(serialized_bytes, None).expect("Reload saved form PDF");
+
+    assert!(
+        !reloaded_session.forms.is_empty(),
+        "Must retain AcroForm fields in saved PDF"
+    );
+    let loaded_name = reloaded_session
+        .forms
+        .iter()
+        .find(|f| f.name == "Client Name");
+    assert!(loaded_name.is_some(), "Client Name field must exist");
+    assert_eq!(loaded_name.unwrap().value, "Jane Doe");
+}
+
+#[test]
+fn test_integration_cubic_bezier_smoothing_and_signature_rendering() {
+    use kestrel_core::sign::{self, StrokePoint, VisualSignature};
+
+    // Raw discrete mouse/stylus input points with corners
+    let raw_points = vec![
+        StrokePoint::new(10.0, 10.0, 0.5),
+        StrokePoint::new(30.0, 45.0, 0.8),
+        StrokePoint::new(70.0, 30.0, 1.0),
+        StrokePoint::new(120.0, 90.0, 0.7),
+        StrokePoint::new(180.0, 60.0, 0.4),
+    ];
+
+    let smoothed = sign::smooth_stroke_bezier(&raw_points, 4);
+    assert!(
+        smoothed.len() > raw_points.len(),
+        "Smoothed stroke must have interpolated spline points"
+    );
+    assert_eq!(smoothed.first().unwrap().x, 10.0);
+    assert_eq!(smoothed.first().unwrap().y, 10.0);
+
+    let mut visual_sig = VisualSignature::new(0, [50.0, 100.0, 200.0, 80.0]);
+    visual_sig.add_smoothed_stroke(&raw_points);
+    assert_eq!(visual_sig.strokes.len(), 1);
+
+    let bounds = visual_sig.compute_strokes_bounds();
+    assert!(bounds.is_some());
+    let [min_x, min_y, max_x, max_y] = bounds.unwrap();
+    assert!(min_x <= 10.0);
+    assert!(max_x >= 180.0);
+    assert!(min_y <= 10.0);
+    assert!(max_y >= 90.0);
+
+    // Generate PDF vector content operators
+    let operators = visual_sig.generate_pdf_graphics_operators(842.0);
+    assert!(!operators.is_empty());
+    let op_str = String::from_utf8_lossy(&operators);
+    assert!(op_str.contains("q\n"), "Must save graphics state");
+    assert!(op_str.contains("RG\n"), "Must set stroke color");
+    assert!(op_str.contains("w\n"), "Must set line width");
+    assert!(op_str.contains("m\n"), "Must contain moveto operator");
+    assert!(op_str.contains("l\n"), "Must contain lineto operator");
+    assert!(op_str.contains("S\n"), "Must stroke path");
+    assert!(op_str.contains("Q\n"), "Must restore graphics state");
+}
+
+#[test]
+fn test_integration_pades_digital_signature_embedding_and_verification() {
+    use kestrel_core::sign::{self, DigitalSignatureMeta};
+
+    let base_pdf = create_test_pdf_bytes("Executive Employment Agreement 2026");
+    let mut session =
+        DocumentSession::open_from_bytes(base_pdf, None).expect("Open document session");
+
+    let mut meta = DigitalSignatureMeta::new("Alice M. Wonderland");
+    meta.location = Some("Zurich, Switzerland".to_string());
+    meta.reason = Some("Formal Acceptance and Execution".to_string());
+    session.set_digital_signature(meta);
+
+    let signed_bytes = session.save_to_bytes().expect("Save digitally signed PDF");
+    assert!(!signed_bytes.is_empty());
+
+    let parsed_doc = Document::load_mem(&signed_bytes).expect("Signed PDF must parse with lopdf");
+
+    // Verify signature dictionary exists and matches hash
+    let fingerprint = session.digital_signature.unwrap().sha256_fingerprint;
+    assert!(
+        !fingerprint.is_empty(),
+        "Signature fingerprint must be calculated"
+    );
+    assert!(
+        sign::verify_signature(&parsed_doc, &fingerprint),
+        "PAdES digital signature verification must succeed"
+    );
+}
