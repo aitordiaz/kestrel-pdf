@@ -79,15 +79,26 @@ impl KestrelApp {
         }
     }
 
+    /// Returns the current title bar text including the active filename.
+    pub fn title_bar_text(&self) -> String {
+        match &self.current_file_name {
+            Some(name) => format!("🦅 Kestrel-PDF — {}", name),
+            None => "🦅 Kestrel-PDF".to_string(),
+        }
+    }
+
     /// Renders the entire application UI layout given an egui Context.
     pub fn render_ui(&mut self, ctx: &Context) {
+        // Update OS window title bar with active document name
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title_bar_text()));
+
         // Poll for newly rasterized background tiles
         self.pipeline.process_incoming_tiles();
 
         // 1. Top Toolbar
         egui::TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("🦅 Kestrel-PDF");
+                ui.heading(self.title_bar_text());
                 ui.separator();
 
                 if ui.button("📂 Open File").clicked() {
@@ -303,35 +314,71 @@ impl KestrelApp {
 
                                 // Render Page Card with drop-shadow border
                                 ui.add_space(16.0);
-                                egui::Frame::canvas(ui.style())
-                                    .fill(Color32::WHITE)
-                                    .stroke(egui::Stroke::new(
-                                        1.0_f32,
-                                        Color32::from_rgb(200, 205, 215),
-                                    ))
-                                    .rounding(egui::Rounding::same(4.0))
-                                    .show(ui, |ui| {
-                                        if let Some(texture) = self.textures.get(&key) {
-                                            ui.image((
-                                                texture.id(),
-                                                Vec2::new(base_width, base_height),
-                                            ));
-                                        } else {
-                                            // Loading placeholder
-                                            let (rect, _) = ui.allocate_exact_size(
-                                                Vec2::new(base_width, base_height),
-                                                egui::Sense::hover(),
+                                let (response, painter) = ui.allocate_painter(
+                                    Vec2::new(base_width, base_height),
+                                    egui::Sense::hover(),
+                                );
+                                let rect = response.rect;
+
+                                // 1. Draw page paper background with subtle document border
+                                painter.rect_filled(rect, 4.0, Color32::WHITE);
+                                painter.rect_stroke(
+                                    rect,
+                                    4.0,
+                                    egui::Stroke::new(1.0_f32, Color32::from_rgb(200, 205, 215)),
+                                );
+
+                                // 2. If tile texture exists, draw behind text
+                                if let Some(texture) = self.textures.get(&key) {
+                                    painter.image(
+                                        texture.id(),
+                                        rect,
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(0.0, 0.0),
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                        Color32::WHITE,
+                                    );
+                                }
+
+                                // 3. Render actual PDF page text content (Title, Headings, Paragraphs)
+                                if let Some(session) = &self.session {
+                                    if let Some(text) = session.get_page_text(page_idx) {
+                                        let mut y_offset = rect.top() + 36.0 * self.zoom_level;
+                                        let x_margin = rect.left() + 40.0 * self.zoom_level;
+
+                                        for (line_idx, line) in text.lines().enumerate() {
+                                            let trimmed = line.trim();
+                                            if trimmed.is_empty() {
+                                                y_offset += 14.0 * self.zoom_level;
+                                                continue;
+                                            }
+                                            let font_size = if line_idx == 0 {
+                                                (22.0 * self.zoom_level).clamp(12.0, 52.0)
+                                            } else {
+                                                (14.0 * self.zoom_level).clamp(8.0, 36.0)
+                                            };
+                                            let font_id = egui::FontId::proportional(font_size);
+                                            let color = if line_idx == 0 {
+                                                Color32::from_rgb(15, 23, 42) // Deep slate title
+                                            } else {
+                                                Color32::from_rgb(51, 65, 85) // Slate body text
+                                            };
+
+                                            painter.text(
+                                                egui::pos2(x_margin, y_offset),
+                                                egui::Align2::LEFT_TOP,
+                                                trimmed,
+                                                font_id,
+                                                color,
                                             );
-                                            ui.painter().rect_filled(rect, 0.0, Color32::WHITE);
-                                            ui.painter().text(
-                                                rect.center(),
-                                                egui::Align2::CENTER_CENTER,
-                                                format!("Rasterizing Page {}...", page_num),
-                                                egui::FontId::proportional(16.0),
-                                                Color32::DARK_GRAY,
-                                            );
+                                            y_offset += font_size * 1.45;
+                                            if y_offset > rect.bottom() - 24.0 {
+                                                break;
+                                            }
                                         }
-                                    });
+                                    }
+                                }
 
                                 ui.label(format!("Page {}", page_num));
                                 ui.add_space(16.0);

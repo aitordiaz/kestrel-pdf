@@ -45,6 +45,80 @@ fn create_sample_pdf_bytes(title: &str) -> Vec<u8> {
     buffer
 }
 
+fn extract_all_text_from_shapes(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
+    fn extract_from_shape(shape: &egui::epaint::Shape, texts: &mut Vec<String>) {
+        match shape {
+            egui::epaint::Shape::Text(text_shape) => {
+                texts.push(text_shape.galley.text().to_string());
+            }
+            egui::epaint::Shape::Vec(vec) => {
+                for s in vec {
+                    extract_from_shape(s, texts);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut texts = Vec::new();
+    for clipped in shapes {
+        extract_from_shape(&clipped.shape, &mut texts);
+    }
+    texts
+}
+
+#[test]
+fn test_e2e_pdf_viewer_displays_title_and_filename_in_title_bar() {
+    let document_title = "Confidential Strategic Plan 2026";
+    let document_filename = "strategic_plan_v2.pdf";
+
+    // 1. Generate valid synthetic PDF with the specific title
+    let pdf_bytes = create_sample_pdf_bytes(document_title);
+
+    // 2. Initialize application and load document with filename
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some(document_filename.to_string()));
+
+    // 3. Verify filename is present in the title bar text
+    let title_bar = app.title_bar_text();
+    assert!(
+        title_bar.contains(document_filename),
+        "Title bar text must contain filename '{}', got: '{}'",
+        document_filename,
+        title_bar
+    );
+
+    // 4. Run full UI render cycle
+    let ctx = Context::default();
+    let raw_input = egui::RawInput::default();
+    let full_output = ctx.run(raw_input, |ctx| {
+        app.render_ui(ctx);
+    });
+
+    // 5. Extract all rendered text elements across all UI shapes
+    let all_rendered_texts = extract_all_text_from_shapes(&full_output.shapes);
+
+    // 6. Assert filename is present in the rendered title bar heading
+    let filename_rendered = all_rendered_texts
+        .iter()
+        .any(|t| t.contains(document_filename));
+    assert!(
+        filename_rendered,
+        "Filename '{}' must be rendered in the top title bar heading. Rendered texts: {:?}",
+        document_filename, all_rendered_texts
+    );
+
+    // 7. Assert document title is present in the PDF viewer
+    let title_rendered = all_rendered_texts
+        .iter()
+        .any(|t| t.contains(document_title));
+    assert!(
+        title_rendered,
+        "Title '{}' must be rendered in the PDF viewer canvas. Rendered texts: {:?}",
+        document_title, all_rendered_texts
+    );
+}
+
 #[test]
 fn test_e2e_smoke_app_lifecycle_and_ui_frame() {
     let mut app = KestrelApp::default();
