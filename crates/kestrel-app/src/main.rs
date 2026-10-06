@@ -1,5 +1,4 @@
-use kestrel_app::KestrelApp;
-
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt::init();
 
@@ -16,6 +15,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Kestrel-PDF",
         native_options,
-        Box::new(|_cc| Ok(Box::new(KestrelApp::default()))),
+        Box::new(|_cc| Ok(Box::new(kestrel_app::KestrelApp::default()))),
     )
 }
+
+#[cfg(target_arch = "wasm32")]
+fn main() {}

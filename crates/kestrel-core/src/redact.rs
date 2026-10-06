@@ -24,16 +24,13 @@ pub struct RedactionEngine;
 impl RedactionEngine {
     /// Applies true redaction to a PDF document, permanently excising
     /// text operators and sanitizing intersecting image streams.
-    pub fn apply_redactions(
-        pdf_bytes: &[u8],
-        _targets: &[RedactionTarget],
-    ) -> Result<Vec<u8>> {
+    pub fn apply_redactions(pdf_bytes: &[u8], _targets: &[RedactionTarget]) -> Result<Vec<u8>> {
         // Uses lopdf to parse the AST, uncompress stream, strip text operators,
         // rewrite the xref table, and produce sanitized bytes.
         let doc = lopdf::Document::load_mem(pdf_bytes)?;
         let mut sanitized_doc = doc;
         sanitized_doc.prune_objects();
-        
+
         let mut output = Vec::new();
         sanitized_doc.save_to(&mut output)?;
         Ok(output)
