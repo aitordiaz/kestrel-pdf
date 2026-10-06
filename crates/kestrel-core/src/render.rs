@@ -37,28 +37,18 @@ impl TileBuffer {
         }
     }
 
-    /// Renders a synthetic high-DPI page tile with margins and subtle grid/lines.
-    pub fn synthetic_page_tile(width: u32, height: u32, page_index: u16) -> Self {
+    /// Renders a high-DPI clean page tile with subtle document borders.
+    pub fn synthetic_page_tile(width: u32, height: u32, _page_index: u16) -> Self {
         let mut rgba = vec![255u8; (width * height * 4) as usize];
 
-        // Add subtle border / margin shading
+        // Add subtle document border lines
         for y in 0..height {
             for x in 0..width {
                 let idx = ((y * width + x) * 4) as usize;
-                // Add soft document margin lines
                 if x == 0 || x == width - 1 || y == 0 || y == height - 1 {
-                    rgba[idx] = 220;
-                    rgba[idx + 1] = 220;
-                    rgba[idx + 2] = 225;
-                } else if (x > 20 && x < width - 20)
-                    && (y > 40 && y < 44 || y > 60 && y < 62 || y > 80 && y < 82)
-                {
-                    // Simulated text lines on tile
-                    if !(x + y + (page_index as u32 * 17)).is_multiple_of(7) {
-                        rgba[idx] = 180;
-                        rgba[idx + 1] = 185;
-                        rgba[idx + 2] = 195;
-                    }
+                    rgba[idx] = 230;
+                    rgba[idx + 1] = 230;
+                    rgba[idx + 2] = 235;
                 }
             }
         }

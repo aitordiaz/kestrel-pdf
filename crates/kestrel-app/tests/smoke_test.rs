@@ -317,3 +317,60 @@ fn test_e2e_contract_signature_creation_and_placement() {
         "Must render cryptographic verification badge on signed document canvas"
     );
 }
+
+#[test]
+fn test_e2e_fit_width_and_fit_page_and_visual_layout() {
+    use kestrel_app::app::FitMode;
+
+    let mut app = KestrelApp::default();
+    let pdf_bytes = create_sample_pdf_bytes("High Fidelity Layout Fit Test");
+    app.load_document_bytes(pdf_bytes, Some("layout_test.pdf".to_string()));
+
+    // 1. Initial zoom level is default 1.0
+    assert_eq!(app.zoom_level, 1.0);
+
+    // 2. Request Fit Width
+    app.pending_fit = Some(FitMode::FitWidth);
+
+    let ctx = Context::default();
+    let raw_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(1200.0, 900.0),
+        )),
+        ..Default::default()
+    };
+
+    let full_output = ctx.run(raw_input.clone(), |ctx| {
+        app.render_ui(ctx);
+    });
+
+    // Zoom level must have been recalculated to fit available width
+    assert!(
+        app.zoom_level > 1.0,
+        "Zoom level should adapt to fit 1200px width: got {}",
+        app.zoom_level
+    );
+
+    // 3. Request Fit Page
+    app.pending_fit = Some(FitMode::FitPage);
+    let _ = ctx.run(raw_input, |ctx| {
+        app.render_ui(ctx);
+    });
+
+    assert!(
+        app.zoom_level > 0.5,
+        "Zoom level should be valid positive value after Fit Page: got {}",
+        app.zoom_level
+    );
+
+    // 4. Verify text content is in rendered output
+    let texts = extract_all_text_from_shapes(&full_output.shapes);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("High Fidelity Layout Fit Test")),
+        "Rendered canvas must contain text: {:?}",
+        texts
+    );
+}

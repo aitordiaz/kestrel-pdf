@@ -466,3 +466,196 @@ fn test_integration_identity_h_fallback_without_cmap() {
         extracted
     );
 }
+
+#[test]
+fn test_integration_multi_filter_ascii85_flate_decompression() {
+    use kestrel_core::document::decode_ascii85;
+    use lopdf::content::{Content, Operation};
+
+    // 1. Create content stream with PDF text
+    let original_ops = Content {
+        operations: vec![
+            Operation::new("BT", vec![]),
+            Operation::new(
+                "Tm",
+                vec![
+                    1.into(),
+                    0.into(),
+                    0.into(),
+                    1.into(),
+                    50.into(),
+                    700.into(),
+                ],
+            ),
+            Operation::new("Tf", vec![Object::Name(b"F1".to_vec()), 12.into()]),
+            Operation::new(
+                "Tj",
+                vec![Object::string_literal("Multi-Filter Test Success")],
+            ),
+            Operation::new("ET", vec![]),
+        ],
+    };
+    let raw_content = original_ops.encode().expect("Encode content");
+
+    // 2. Compress with zlib (Flate)
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    let mut zlib_encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    zlib_encoder.write_all(&raw_content).expect("Zlib compress");
+    let flate_bytes = zlib_encoder.finish().expect("Zlib finish");
+
+    // 3. Encode with ASCII85
+    let mut ascii85_bytes = Vec::new();
+    for chunk in flate_bytes.chunks(4) {
+        let mut tuple = 0u32;
+        for (i, &b) in chunk.iter().enumerate() {
+            tuple |= (b as u32) << (24 - i * 8);
+        }
+        if chunk.len() == 4 && tuple == 0 {
+            ascii85_bytes.push(b'z');
+        } else {
+            let mut encoded = [b'!'; 5];
+            for i in (0..5).rev() {
+                encoded[i] = b'!' + (tuple % 85) as u8;
+                tuple /= 85;
+            }
+            let take = chunk.len() + 1;
+            ascii85_bytes.extend_from_slice(&encoded[..take]);
+        }
+    }
+    ascii85_bytes.extend_from_slice(b"~>");
+
+    // Verify decode_ascii85 roundtrip
+    let recovered_flate = decode_ascii85(&ascii85_bytes);
+    assert_eq!(recovered_flate, flate_bytes);
+
+    // 4. Build a test lopdf document with /Filter [/ASCII85Decode /FlateDecode]
+    let mut doc = lopdf::Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+
+    let content_stream = lopdf::Stream::new(
+        dictionary! {
+            "Filter" => Object::Array(vec![
+                Object::Name(b"ASCII85Decode".to_vec()),
+                Object::Name(b"FlateDecode".to_vec()),
+            ]),
+        },
+        ascii85_bytes,
+    );
+    // Lopdf compresses streams by default if not set; content is already encoded
+    let content_id = doc.add_object(Object::Stream(content_stream));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        "Contents" => content_id,
+        "Resources" => dictionary! {
+            "Font" => dictionary! {
+                "F1" => font_id,
+            },
+        },
+    });
+
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buffer = Vec::new();
+    doc.save_to(&mut buffer).expect("Save test PDF");
+
+    // 5. Open in DocumentSession and assert text extraction & visual layout
+    let session = DocumentSession::open_from_bytes(buffer, None).expect("Open session");
+    assert_eq!(session.page_count, 1);
+    let text = session.get_page_text(0).expect("Extracted text");
+    assert!(
+        text.contains("Multi-Filter Test Success"),
+        "Extracted text should contain target string: got '{}'",
+        text
+    );
+
+    let layout = session.get_page_layout(0).expect("Visual layout");
+    assert_eq!(layout.width_pt, 612.0);
+    assert_eq!(layout.height_pt, 792.0);
+    assert!(
+        !layout.text_runs.is_empty(),
+        "Should have positioned text runs"
+    );
+    assert_eq!(layout.text_runs[0].text, "Multi-Filter Test Success");
+    assert_eq!(layout.text_runs[0].x, 50.0);
+    assert_eq!(layout.text_runs[0].y, 700.0);
+}
+
+#[test]
+fn test_integration_real_documents_if_present() {
+    let factura_path = std::path::Path::new("/home/aitor/projects/Factura.pdf");
+    if factura_path.exists() {
+        let session = DocumentSession::open_from_file(factura_path).expect("Load Factura");
+        assert_eq!(session.page_count, 4, "Factura should have 4 pages");
+        for page_idx in 0..session.page_count as usize {
+            let text = session.get_page_text(page_idx).unwrap_or("");
+            assert!(
+                !text.is_empty(),
+                "Page {} in Factura must NOT be blank! Got empty string",
+                page_idx
+            );
+            let layout = session.get_page_layout(page_idx).expect("Layout");
+            assert!(
+                !layout.text_runs.is_empty(),
+                "Page {} must have positioned text runs",
+                page_idx
+            );
+        }
+        let p0_text = session.get_page_text(0).unwrap();
+        assert!(
+            p0_text.contains("Factura"),
+            "Page 0 should contain 'Factura': got '{}'",
+            p0_text
+        );
+    }
+
+    let repsol_path =
+        std::path::Path::new("/home/aitor/projects/REPSOL_CAT_Cambio de titular_ACT_CAT_03.pdf");
+    if repsol_path.exists() {
+        let session = DocumentSession::open_from_file(repsol_path).expect("Load Repsol");
+        assert_eq!(session.page_count, 2, "Repsol should have 2 pages");
+        assert_eq!(session.forms.len(), 38, "Repsol should have 38 form fields");
+
+        for page_idx in 0..session.page_count as usize {
+            let page = &session.pages[page_idx];
+            let layout = session.get_page_layout(page_idx).expect("Layout");
+            assert!(
+                !layout.text_runs.is_empty(),
+                "Repsol page {} must have positioned text runs",
+                page_idx
+            );
+            for tr in &layout.text_runs {
+                assert!(
+                    tr.x >= -10.0 && tr.x <= page.width_pt + 50.0,
+                    "Text x coordinate out of bounds: {}",
+                    tr.x
+                );
+                assert!(
+                    tr.y >= -10.0 && tr.y <= page.height_pt + 50.0,
+                    "Text y coordinate out of bounds: {}",
+                    tr.y
+                );
+            }
+        }
+    }
+}

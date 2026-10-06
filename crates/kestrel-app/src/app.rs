@@ -25,12 +25,19 @@ pub enum SidebarTab {
     SearchResults,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FitMode {
+    FitWidth,
+    FitPage,
+}
+
 pub struct KestrelApp {
     pub session: Option<DocumentSession>,
     pub current_file_name: Option<String>,
     pub current_page: usize,
     pub total_pages: usize,
     pub zoom_level: f32,
+    pub pending_fit: Option<FitMode>,
     pub active_tool: ActiveTool,
     pub sidebar_open: bool,
     pub sidebar_tab: SidebarTab,
@@ -60,6 +67,7 @@ impl Default for KestrelApp {
             current_page: 1,
             total_pages: 0,
             zoom_level: 1.0,
+            pending_fit: None,
             active_tool: ActiveTool::Pan,
             sidebar_open: true,
             sidebar_tab: SidebarTab::Thumbnails,
@@ -303,8 +311,11 @@ impl KestrelApp {
                     if ui.button("➖").clicked() {
                         self.zoom_level = (self.zoom_level / 1.15).max(0.1);
                     }
+                    if ui.button("Fit Page").clicked() {
+                        self.pending_fit = Some(FitMode::FitPage);
+                    }
                     if ui.button("Fit Width").clicked() {
-                        self.zoom_level = 1.0;
+                        self.pending_fit = Some(FitMode::FitWidth);
                     }
                     if ui.button("Reset").clicked() {
                         self.zoom_level = 1.0;
@@ -530,15 +541,48 @@ impl KestrelApp {
                     });
                 });
             } else {
+                // Apply pending Fit Width / Fit Page if requested
+                if let Some(fit_mode) = self.pending_fit.take() {
+                    let (page_w, page_h) = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.pages.get(self.current_page.saturating_sub(1)))
+                        .map(|p| (p.width_pt, p.height_pt))
+                        .unwrap_or((595.28, 841.89));
+
+                    let avail = ui.available_size();
+                    let margin_x = 48.0;
+                    let margin_y = 48.0;
+                    match fit_mode {
+                        FitMode::FitWidth => {
+                            let target_zoom = (avail.x - margin_x) / page_w;
+                            self.zoom_level = target_zoom.clamp(0.1, 5.0);
+                        }
+                        FitMode::FitPage => {
+                            let zoom_w = (avail.x - margin_x) / page_w;
+                            let zoom_h = (avail.y - margin_y) / page_h;
+                            self.zoom_level = zoom_w.min(zoom_h).clamp(0.1, 5.0);
+                        }
+                    }
+                }
+
                 egui::ScrollArea::both()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
-                            let base_width = 595.0 * self.zoom_level;
-                            let base_height = 842.0 * self.zoom_level;
-
                             for page_idx in 0..self.total_pages {
-                                let page_num = page_idx + 1;
+                                let (page_w, page_h) = if let Some(session) = &self.session {
+                                    if let Some(p) = session.pages.get(page_idx) {
+                                        (p.width_pt, p.height_pt)
+                                    } else {
+                                        (595.28, 841.89)
+                                    }
+                                } else {
+                                    (595.28, 841.89)
+                                };
+                                let base_width = page_w * self.zoom_level;
+                                let base_height = page_h * self.zoom_level;
+
                                 let key = PageTileKey {
                                     page_index: page_idx as u16,
                                     tile_x: 0,
@@ -573,7 +617,9 @@ impl KestrelApp {
 
                                 // Render Page Card with drop-shadow border
                                 ui.add_space(16.0);
-                                let sense = if self.active_tool == ActiveTool::SignContract {
+                                let sense = if self.active_tool == ActiveTool::SignContract
+                                    || self.active_tool == ActiveTool::FormFill
+                                {
                                     egui::Sense::click_and_drag()
                                 } else {
                                     egui::Sense::hover()
@@ -615,55 +661,128 @@ impl KestrelApp {
                                     );
                                 }
 
-                                // 3. Render actual PDF page text content (Title, Headings, Paragraphs)
+                                // 3. Draw Vector Rectangles (borders, table grid cells, headers)
                                 if let Some(session) = &self.session {
-                                    if let Some(text) = session.get_page_text(page_idx) {
-                                        let mut y_offset = rect.top() + 36.0 * self.zoom_level;
-                                        let x_margin = rect.left() + 40.0 * self.zoom_level;
-
-                                        for (line_idx, line) in text.lines().enumerate() {
-                                            let trimmed = line.trim();
-                                            if trimmed.is_empty()
-                                                || trimmed.contains("Identity-H Unimplemented")
-                                            {
-                                                y_offset += 14.0 * self.zoom_level;
-                                                continue;
-                                            }
-                                            let font_size = if line_idx == 0 {
-                                                (22.0 * self.zoom_level).clamp(12.0, 52.0)
-                                            } else {
-                                                (14.0 * self.zoom_level).clamp(8.0, 36.0)
-                                            };
-                                            let font_id = egui::FontId::proportional(font_size);
-                                            let color = if line_idx == 0 {
-                                                Color32::from_rgb(15, 23, 42) // Deep slate title
-                                            } else {
-                                                Color32::from_rgb(51, 65, 85) // Slate body text
-                                            };
-
-                                            painter.text(
-                                                egui::pos2(x_margin, y_offset),
-                                                egui::Align2::LEFT_TOP,
-                                                trimmed,
-                                                font_id,
-                                                color,
+                                    if let Some(layout) = session.get_page_layout(page_idx) {
+                                        for r in &layout.rects {
+                                            let c_x = rect.left() + r.x * self.zoom_level;
+                                            let c_y = rect.top()
+                                                + (page_h - (r.y + r.height)) * self.zoom_level;
+                                            let c_w = (r.width * self.zoom_level).abs();
+                                            let c_h = (r.height * self.zoom_level).abs();
+                                            let r_rect = egui::Rect::from_min_size(
+                                                egui::pos2(c_x, c_y),
+                                                Vec2::new(c_w, c_h),
                                             );
-                                            y_offset += font_size * 1.45;
-                                            if y_offset > rect.bottom() - 24.0 {
-                                                break;
+
+                                            if let Some(fill) = r.fill_color {
+                                                // Avoid repainting whole page white background
+                                                if !(fill == [255, 255, 255]
+                                                    && c_w >= base_width * 0.98
+                                                    && c_h >= base_height * 0.98)
+                                                {
+                                                    painter.rect_filled(
+                                                        r_rect,
+                                                        0.0,
+                                                        Color32::from_rgb(
+                                                            fill[0], fill[1], fill[2],
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                            if let Some(stroke) = r.stroke_color {
+                                                let sw = (r.stroke_width * self.zoom_level)
+                                                    .clamp(0.5, 5.0);
+                                                painter.rect_stroke(
+                                                    r_rect,
+                                                    0.0,
+                                                    egui::Stroke::new(
+                                                        sw,
+                                                        Color32::from_rgb(
+                                                            stroke[0], stroke[1], stroke[2],
+                                                        ),
+                                                    ),
+                                                );
                                             }
                                         }
                                     }
                                 }
 
-                                // 4. Interactive AcroForm Widgets on Page
+                                // 4. Render PDF Positioned Text Content
+                                if let Some(session) = &self.session {
+                                    if let Some(layout) = session.get_page_layout(page_idx) {
+                                        if !layout.text_runs.is_empty() {
+                                            for tr in &layout.text_runs {
+                                                let t_x = rect.left() + tr.x * self.zoom_level;
+                                                let font_size = (tr.font_size * self.zoom_level)
+                                                    .clamp(6.0, 72.0);
+                                                let t_y = rect.top()
+                                                    + (page_h - tr.y - tr.font_size * 0.85)
+                                                        * self.zoom_level;
+                                                let font_id = egui::FontId::proportional(font_size);
+                                                let color = Color32::from_rgb(
+                                                    tr.color[0],
+                                                    tr.color[1],
+                                                    tr.color[2],
+                                                );
+
+                                                painter.text(
+                                                    egui::pos2(t_x, t_y),
+                                                    egui::Align2::LEFT_TOP,
+                                                    &tr.text,
+                                                    font_id,
+                                                    color,
+                                                );
+                                            }
+                                        } else if let Some(text) = session.get_page_text(page_idx) {
+                                            // Fallback linear text lines
+                                            let mut y_offset = rect.top() + 36.0 * self.zoom_level;
+                                            let x_margin = rect.left() + 40.0 * self.zoom_level;
+
+                                            for (line_idx, line) in text.lines().enumerate() {
+                                                let trimmed = line.trim();
+                                                if trimmed.is_empty()
+                                                    || trimmed.contains("Identity-H Unimplemented")
+                                                {
+                                                    y_offset += 14.0 * self.zoom_level;
+                                                    continue;
+                                                }
+                                                let font_size = if line_idx == 0 {
+                                                    (22.0 * self.zoom_level).clamp(12.0, 52.0)
+                                                } else {
+                                                    (14.0 * self.zoom_level).clamp(8.0, 36.0)
+                                                };
+                                                let font_id = egui::FontId::proportional(font_size);
+                                                let color = if line_idx == 0 {
+                                                    Color32::from_rgb(15, 23, 42)
+                                                } else {
+                                                    Color32::from_rgb(51, 65, 85)
+                                                };
+
+                                                painter.text(
+                                                    egui::pos2(x_margin, y_offset),
+                                                    egui::Align2::LEFT_TOP,
+                                                    trimmed,
+                                                    font_id,
+                                                    color,
+                                                );
+                                                y_offset += font_size * 1.45;
+                                                if y_offset > rect.bottom() - 24.0 {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 5. Interactive AcroForm Widgets on Page
                                 if let Some(session) = &mut self.session {
                                     for field in &mut session.forms {
                                         if field.page_index == page_idx as u16 {
                                             // Map PDF coordinates [llx, lly, urx, ury] to egui canvas
                                             let f_x = rect.left() + field.rect[0] * self.zoom_level;
                                             let f_y = rect.top()
-                                                + (842.0 - field.rect[3]) * self.zoom_level;
+                                                + (page_h - field.rect[3]) * self.zoom_level;
                                             let f_w = ((field.rect[2] - field.rect[0])
                                                 * self.zoom_level)
                                                 .max(24.0);
@@ -800,7 +919,7 @@ impl KestrelApp {
                                     }
                                 }
 
-                                ui.label(format!("Page {}", page_num));
+                                ui.label(format!("Page {}", page_idx + 1));
                                 ui.add_space(16.0);
                             }
                         });
