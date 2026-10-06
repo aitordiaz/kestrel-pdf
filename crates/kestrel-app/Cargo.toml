@@ -21,3 +21,7 @@ rfd = "0.15" # Native file dialog for Windows, macOS, Linux, FreeBSD
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Window", "Document"] }
+
+[dev-dependencies]
+lopdf.workspace = true
+

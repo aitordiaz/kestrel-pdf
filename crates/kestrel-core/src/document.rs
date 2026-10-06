@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
+use lopdf::Object;
 use std::path::{Path, PathBuf};
 
 /// Geometry and basic information about a single PDF page.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PageInfo {
     pub index: u16,
     pub width_pt: f32,
@@ -10,11 +11,29 @@ pub struct PageInfo {
     pub rotation_degrees: u16,
 }
 
-/// Represents an active document session.
+/// Outline / Table of Contents entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutlineItem {
+    pub title: String,
+    pub target_page: u16,
+    pub children: Vec<OutlineItem>,
+}
+
+/// Search match location and context snippet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchResult {
+    pub page_index: u16,
+    pub snippet: String,
+    pub match_count: usize,
+}
+
+/// Represents an active document session with parsed geometry and contents.
 pub struct DocumentSession {
     pub file_path: Option<PathBuf>,
+    pub raw_bytes: Vec<u8>,
     pub page_count: u16,
     pub pages: Vec<PageInfo>,
+    pub outlines: Vec<OutlineItem>,
 }
 
 impl DocumentSession {
@@ -26,18 +45,120 @@ impl DocumentSession {
         Self::open_from_bytes(bytes, Some(path_buf))
     }
 
-    /// Opens a PDF document from in-memory byte buffer (essential for WASM).
-    pub fn open_from_bytes(_bytes: Vec<u8>, file_path: Option<PathBuf>) -> Result<Self> {
-        // In Phase 1 implementation, binds to PDFium instance to query page tree
+    /// Opens a PDF document from an in-memory byte buffer.
+    pub fn open_from_bytes(bytes: Vec<u8>, file_path: Option<PathBuf>) -> Result<Self> {
+        let doc =
+            lopdf::Document::load_mem(&bytes).context("Failed to parse PDF document structure")?;
+
+        let mut pages = Vec::new();
+        let page_dict_map = doc.get_pages();
+
+        for (page_num, object_id) in &page_dict_map {
+            let mut width_pt = 595.28; // Standard A4 default
+            let mut height_pt = 841.89;
+            let mut rotation_degrees = 0;
+
+            if let Ok(page_obj) = doc.get_object(*object_id) {
+                if let Ok(dict) = page_obj.as_dict() {
+                    // Check MediaBox [llx, lly, urx, ury]
+                    if let Ok(mediabox) = dict.get(b"MediaBox").and_then(Object::as_array) {
+                        if mediabox.len() >= 4 {
+                            let x0 = mediabox[0].as_f32().unwrap_or(0.0);
+                            let y0 = mediabox[1].as_f32().unwrap_or(0.0);
+                            let x1 = mediabox[2].as_f32().unwrap_or(595.28);
+                            let y1 = mediabox[3].as_f32().unwrap_or(841.89);
+                            width_pt = (x1 - x0).abs();
+                            height_pt = (y1 - y0).abs();
+                        }
+                    }
+
+                    // Check Rotate
+                    if let Ok(rot) = dict.get(b"Rotate").and_then(Object::as_i64) {
+                        rotation_degrees = (rot % 360) as u16;
+                    }
+                }
+            }
+
+            pages.push(PageInfo {
+                index: (*page_num as u16).saturating_sub(1),
+                width_pt,
+                height_pt,
+                rotation_degrees,
+            });
+        }
+
+        let page_count = pages.len() as u16;
+
+        // Parse Outlines / Table of Contents if present
+        let mut outlines = Vec::new();
+        if let Ok(catalog) = doc.catalog() {
+            if let Ok(outlines_dict) = catalog.get(b"Outlines").and_then(Object::as_dict) {
+                if let Ok(first_ref) = outlines_dict.get(b"First").and_then(Object::as_reference) {
+                    if let Ok(first_obj) = doc.get_object(first_ref).and_then(Object::as_dict) {
+                        if let Ok(title_bytes) = first_obj.get(b"Title").and_then(Object::as_str) {
+                            outlines.push(OutlineItem {
+                                title: String::from_utf8_lossy(title_bytes).to_string(),
+                                target_page: 0,
+                                children: Vec::new(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(Self {
             file_path,
-            page_count: 0,
-            pages: Vec::new(),
+            raw_bytes: bytes,
+            page_count,
+            pages,
+            outlines,
         })
     }
 
-    /// Returns the aspect ratio of the specified page.
+    /// Returns the aspect ratio (width / height) of the specified page.
     pub fn page_aspect_ratio(&self, page_index: usize) -> Option<f32> {
         self.pages.get(page_index).map(|p| p.width_pt / p.height_pt)
+    }
+
+    /// Extracts text for a given page.
+    pub fn extract_text_for_page(&self, page_index: usize) -> Result<String> {
+        let doc = lopdf::Document::load_mem(&self.raw_bytes)?;
+        let page_num = (page_index + 1) as u32;
+        let text = doc.extract_text(&[page_num]).unwrap_or_default();
+        Ok(text)
+    }
+
+    /// Performs full-text search across all document pages.
+    pub fn search_text(&self, query: &str) -> Vec<SearchResult> {
+        if query.trim().is_empty() {
+            return Vec::new();
+        }
+
+        let mut results = Vec::new();
+        let query_lower = query.to_lowercase();
+
+        if let Ok(doc) = lopdf::Document::load_mem(&self.raw_bytes) {
+            for page in &self.pages {
+                let page_num = (page.index + 1) as u32;
+                if let Ok(text) = doc.extract_text(&[page_num]) {
+                    let text_lower = text.to_lowercase();
+                    let matches: Vec<_> = text_lower.match_indices(&query_lower).collect();
+                    if !matches.is_empty() {
+                        let first_idx = matches[0].0;
+                        let start = first_idx.saturating_sub(20);
+                        let end = (first_idx + query.len() + 30).min(text.len());
+                        let snippet = format!("...{}...", text[start..end].replace('\n', " "));
+                        results.push(SearchResult {
+                            page_index: page.index,
+                            snippet,
+                            match_count: matches.len(),
+                        });
+                    }
+                }
+            }
+        }
+
+        results
     }
 }

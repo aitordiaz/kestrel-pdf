@@ -1671,6 +1671,7 @@ dependencies = [
  "eframe",
  "egui",
  "kestrel-core",
+ "lopdf",
  "rfd",
  "tracing",
  "tracing-subscriber",
