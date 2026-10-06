@@ -1,6 +1,6 @@
-# Velox-PDF: MVP Development Roadmap
+# Kestrel-PDF: MVP Development Roadmap
 
-This roadmap defines the implementation trajectory for Velox-PDF, emphasizing high-performance delivery, rigorous benchmarks, and strict modularity.
+This roadmap defines the implementation trajectory for Kestrel-PDF, emphasizing high-performance delivery, rigorous benchmarks, and strict modularity.
 
 ```mermaid
 flowchart LR

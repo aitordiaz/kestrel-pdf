@@ -72,7 +72,7 @@ PDF is not merely an image format; it is a complex Turing-complete-adjacent disp
 
 ---
 
-## 4. Recommended Engine Strategy for Velox-PDF
+## 4. Recommended Engine Strategy for Kestrel-PDF
 
 To achieve **maximum performance**, **unrestricted licensing (permissive)**, and **complete feature support**:
 

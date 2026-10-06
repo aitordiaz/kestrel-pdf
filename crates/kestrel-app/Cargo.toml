@@ -1,0 +1,23 @@
+[package]
+name = "kestrel-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Universal cross-platform desktop & WebAssembly frontend for Kestrel-PDF using egui"
+
+[dependencies]
+kestrel-core = { path = "../kestrel-core" }
+egui.workspace = true
+eframe.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native desktop platform dependencies
+rfd = "0.15" # Native file dialog for Windows, macOS, Linux, FreeBSD
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "Window", "Document"] }

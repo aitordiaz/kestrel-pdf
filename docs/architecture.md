@@ -1,16 +1,16 @@
-# Velox-PDF: Architecture Specification
+# Kestrel-PDF: Architecture Specification
 
 ## 1. High-Level Architecture Overview
 
-Velox-PDF is designed with a **Strictly Decoupled Core-to-UI Architecture**. The performance-critical engine is completely isolated from the platform UI shell.
+Kestrel-PDF is designed with a **Strictly Decoupled Core-to-UI Architecture**. The performance-critical engine is completely isolated from the platform UI shell.
 
 ```mermaid
 flowchart TD
-    subgraph UI_Layer["Platform UI Shell"]
-        WinUI["Windows Shell (WinUI 3 / Slint)"]
-        MacUI["macOS Shell (AppKit / Slint)"]
+    subgraph UI_Layer["Universal egui Shell"]
+        DesktopUI["Desktop Shell (Windows, macOS, Linux, FreeBSD via wgpu)"]
+        WebUI["Web Shell (WebAssembly via WebGL2/WebGPU)"]
         InputHandler["Gesture, Wheel & Stylus Input"]
-        Viewport["Virtualized Page Viewport (DirectX 12 / Metal)"]
+        Viewport["Virtualized Page Viewport (Texture Blit)"]
     end
 
     subgraph App_Layer["Application & State Engine"]
@@ -44,7 +44,7 @@ flowchart TD
 
 ## 2. Core Performance Design Principles
 
-To be the **most performant PDF reader on Windows and macOS**, Velox-PDF implements four architectural pillars:
+To be the **most performant PDF reader across desktop and web**, Kestrel-PDF implements four architectural pillars:
 
 ### A. Asynchronous, Tiled Viewport Rendering
 - **Main Thread Never Blocks**: The UI thread only manages input events (scroll, zoom, click) and blits cached GPU textures.
@@ -55,13 +55,13 @@ To be the **most performant PDF reader on Windows and macOS**, Velox-PDF impleme
 - **Tiled Decomposition**: Large pages (e.g. A0 blueprints or CAD drawings) are subdivided into $512 \times 512$ pixel tiles. Only tiles intersecting the active viewport are rasterized, preventing out-of-memory crashes.
 
 ### B. Bounded LRU Cache & Virtualized Memory
-- Even when viewing a 10,000-page PDF, memory usage remains bounded ($< 60\text{ MB}$ footprint).
+- Even when viewing a 10,000-page PDF, memory usage remains bounded ($< 40\text{ MB}$ footprint).
 - As pages scroll out of the predictive window, their rasterized bitmaps are evicted from the LRU cache. The raw PDF file is memory-mapped (`mmap`), loading byte slices on-demand.
 
 ### C. True Redaction Engine vs. Superficial Masking
 Most basic PDF tools perform "pseudo-redaction" by simply painting a black rectangle annotation over sensitive content. The underlying text remains in the content stream, easily extracted by copying or inspecting the file.
 
-Velox-PDF enforces **Cryptographic & Structural True Redaction**:
+Kestrel-PDF enforces **Cryptographic & Structural True Redaction**:
 1. **Content Stream Parsing**: Decompresses the page content stream (`/Filter /FlateDecode`).
 2. **Text Operator Stripping**: Identifies text showing operators (`Tj`, `TJ`, `'`, `"`) whose bounding boxes intersect the redaction polygon. The operators and glyph indexes are surgically excised or replaced with sanitized spaces.
 3. **Raster Image Scrubbing**: If an image intersects the redaction box, the underlying image pixels are permanently zeroed out in the raster stream; if fully enclosed, the image XObject dictionary is unlinked.
