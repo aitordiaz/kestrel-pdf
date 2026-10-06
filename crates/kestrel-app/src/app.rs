@@ -49,6 +49,7 @@ pub struct KestrelApp {
     pub signature_reason_input: String,
     pub embed_digital_signature: bool,
     pub status_toast: Option<String>,
+    pub last_window_title: String,
 }
 
 impl Default for KestrelApp {
@@ -77,6 +78,7 @@ impl Default for KestrelApp {
             signature_reason_input: "Approved and Signed via Kestrel-PDF".to_string(),
             embed_digital_signature: true,
             status_toast: None,
+            last_window_title: String::new(),
         }
     }
 }
@@ -211,8 +213,12 @@ impl KestrelApp {
 
     /// Renders the entire application UI layout given an egui Context.
     pub fn render_ui(&mut self, ctx: &Context) {
-        // Update OS window title bar with active document name
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title_bar_text()));
+        // Update OS window title bar only when changed to avoid infinite repaint loops
+        let current_title = self.title_bar_text();
+        if self.last_window_title != current_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(current_title.clone()));
+            self.last_window_title = current_title;
+        }
 
         // Poll for newly rasterized background tiles
         self.pipeline.process_incoming_tiles();
@@ -617,7 +623,9 @@ impl KestrelApp {
 
                                         for (line_idx, line) in text.lines().enumerate() {
                                             let trimmed = line.trim();
-                                            if trimmed.is_empty() {
+                                            if trimmed.is_empty()
+                                                || trimmed.contains("Identity-H Unimplemented")
+                                            {
                                                 y_offset += 14.0 * self.zoom_level;
                                                 continue;
                                             }
