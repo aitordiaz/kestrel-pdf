@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
-use lopdf::Object;
+use lopdf::{Dictionary, Object, Stream};
 use std::path::{Path, PathBuf};
+
+use crate::forms::{self, FormField};
+use crate::sign::{self, DigitalSignatureMeta, VisualSignature};
 
 /// Geometry and basic information about a single PDF page.
 #[derive(Debug, Clone, PartialEq)]
@@ -27,7 +30,7 @@ pub struct SearchResult {
     pub match_count: usize,
 }
 
-/// Represents an active document session with parsed geometry and contents.
+/// Represents an active document session with parsed geometry, forms, and signatures.
 pub struct DocumentSession {
     pub file_path: Option<PathBuf>,
     pub raw_bytes: Vec<u8>,
@@ -35,6 +38,9 @@ pub struct DocumentSession {
     pub pages: Vec<PageInfo>,
     pub page_texts: Vec<String>,
     pub outlines: Vec<OutlineItem>,
+    pub forms: Vec<FormField>,
+    pub visual_signatures: Vec<VisualSignature>,
+    pub digital_signature: Option<DigitalSignatureMeta>,
 }
 
 impl DocumentSession {
@@ -65,10 +71,10 @@ impl DocumentSession {
                     // Check MediaBox [llx, lly, urx, ury]
                     if let Ok(mediabox) = dict.get(b"MediaBox").and_then(Object::as_array) {
                         if mediabox.len() >= 4 {
-                            let x0 = mediabox[0].as_f32().unwrap_or(0.0);
-                            let y0 = mediabox[1].as_f32().unwrap_or(0.0);
-                            let x1 = mediabox[2].as_f32().unwrap_or(595.28);
-                            let y1 = mediabox[3].as_f32().unwrap_or(841.89);
+                            let x0 = mediabox[0].as_float().unwrap_or(0.0);
+                            let y0 = mediabox[1].as_float().unwrap_or(0.0);
+                            let x1 = mediabox[2].as_float().unwrap_or(595.28);
+                            let y1 = mediabox[3].as_float().unwrap_or(841.89);
                             width_pt = (x1 - x0).abs();
                             height_pt = (y1 - y0).abs();
                         }
@@ -113,6 +119,9 @@ impl DocumentSession {
             }
         }
 
+        // Extract interactive AcroForms
+        let forms = forms::extract_form_fields(&doc);
+
         Ok(Self {
             file_path,
             raw_bytes: bytes,
@@ -120,6 +129,9 @@ impl DocumentSession {
             pages,
             page_texts,
             outlines,
+            forms,
+            visual_signatures: Vec::new(),
+            digital_signature: None,
         })
     }
 
@@ -172,5 +184,97 @@ impl DocumentSession {
         }
 
         results
+    }
+
+    /// Updates the value of a form field identified by name or id.
+    pub fn update_form_field(&mut self, name_or_id: &str, value: &str) -> bool {
+        for field in &mut self.forms {
+            if field.name == name_or_id || field.id == name_or_id {
+                field.set_value(value);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Adds a new interactive form field.
+    pub fn add_form_field(&mut self, field: FormField) {
+        self.forms.push(field);
+    }
+
+    /// Adds a visual ink signature to be rendered and embedded in the document.
+    pub fn add_visual_signature(&mut self, signature: VisualSignature) {
+        self.visual_signatures.push(signature);
+    }
+
+    /// Sets the cryptographic digital signature metadata.
+    pub fn set_digital_signature(&mut self, meta: DigitalSignatureMeta) {
+        self.digital_signature = Some(meta);
+    }
+
+    /// Serializes the document including modified form fields, visual signatures, and digital signatures.
+    pub fn save_to_bytes(&mut self) -> Result<Vec<u8>> {
+        let mut doc = lopdf::Document::load_mem(&self.raw_bytes)
+            .context("Failed to load document for serialization")?;
+
+        // 1. Apply updated AcroForm field values
+        forms::apply_form_fields(&mut doc, &self.forms)
+            .context("Failed to apply form field values")?;
+
+        // 2. Stamp visual signatures into page content streams
+        let pages = doc.get_pages();
+        for sig in &self.visual_signatures {
+            let page_num = (sig.target_page + 1) as u32;
+            if let Some(&page_obj_id) = pages.get(&page_num) {
+                let page_height = self
+                    .pages
+                    .get(sig.target_page as usize)
+                    .map(|p| p.height_pt)
+                    .unwrap_or(842.0);
+
+                let ops_bytes = sig.generate_pdf_graphics_operators(page_height);
+                if !ops_bytes.is_empty() {
+                    let sig_stream = Stream::new(Dictionary::new(), ops_bytes);
+                    let sig_stream_id = doc.add_object(Object::Stream(sig_stream));
+
+                    if let Ok(page_dict) = doc
+                        .get_object_mut(page_obj_id)
+                        .and_then(Object::as_dict_mut)
+                    {
+                        if let Ok(contents) = page_dict.get_mut(b"Contents") {
+                            match contents {
+                                Object::Reference(existing_id) => {
+                                    *contents = Object::Array(vec![
+                                        Object::Reference(*existing_id),
+                                        Object::Reference(sig_stream_id),
+                                    ]);
+                                }
+                                Object::Array(arr) => {
+                                    arr.push(Object::Reference(sig_stream_id));
+                                }
+                                _ => {
+                                    *contents = Object::Reference(sig_stream_id);
+                                }
+                            }
+                        } else {
+                            page_dict.set("Contents", Object::Reference(sig_stream_id));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Embed cryptographic PAdES digital signature if present
+        if let Some(mut meta) = self.digital_signature.clone() {
+            sign::embed_digital_signature(&mut doc, 0, &mut meta)
+                .context("Failed to embed digital signature")?;
+            self.digital_signature = Some(meta);
+        }
+
+        // 4. Save and return bytes
+        let mut output = Vec::new();
+        doc.save_to(&mut output)
+            .context("Failed to write PDF binary stream")?;
+        Ok(output)
     }
 }

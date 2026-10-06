@@ -193,3 +193,127 @@ fn test_e2e_smoke_empty_document_state_frame() {
         "Smoke test failed: empty state frame must produce welcome UI shapes"
     );
 }
+
+#[test]
+fn test_e2e_form_fill_interaction_and_saving() {
+    use kestrel_app::app::SidebarTab;
+    use kestrel_core::forms::FormField;
+
+    let mut app = KestrelApp::default();
+    let pdf_bytes = create_sample_pdf_bytes("Non-Disclosure Agreement 2026");
+    app.load_document_bytes(pdf_bytes, Some("nda.pdf".to_string()));
+
+    // Inject AcroForm field into document
+    if let Some(session) = &mut app.session {
+        session.add_form_field(FormField::new_text(
+            "signer_organization",
+            "Signer Organization",
+            0,
+            "Acme Global Inc.",
+            [50.0, 600.0, 300.0, 625.0],
+            false,
+        ));
+    }
+
+    // Switch tool and sidebar tab
+    app.active_tool = ActiveTool::FormFill;
+    app.sidebar_tab = SidebarTab::Forms;
+
+    // Render UI frame
+    let ctx = Context::default();
+    let full_output = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+
+    let rendered_texts = extract_all_text_from_shapes(&full_output.shapes);
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("Signer Organization")),
+        "Must render form field name in UI"
+    );
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("Acme Global Inc.")),
+        "Must render current form field value in UI"
+    );
+
+    // Update field value and verify save
+    assert!(app
+        .session
+        .as_mut()
+        .unwrap()
+        .update_form_field("Signer Organization", "Globex Corp"));
+    let saved = app
+        .session
+        .as_mut()
+        .unwrap()
+        .save_to_bytes()
+        .expect("Save NDA PDF");
+    assert!(!saved.is_empty());
+}
+
+#[test]
+fn test_e2e_contract_signature_creation_and_placement() {
+    use kestrel_core::sign::StrokePoint;
+
+    let mut app = KestrelApp::default();
+    let pdf_bytes = create_sample_pdf_bytes("Employment Contract for Senior Architect");
+    app.load_document_bytes(pdf_bytes, Some("contract.pdf".to_string()));
+
+    // 1. Open signature pad modal
+    app.signature_modal_open = true;
+    app.signer_name_input = "Dr. Jane Smith".to_string();
+    app.embed_digital_signature = true;
+
+    // 2. Simulate stylus stroke capture
+    app.signature_pad_current_stroke = vec![
+        StrokePoint::new(10.0, 20.0, 0.5),
+        StrokePoint::new(50.0, 80.0, 0.9),
+        StrokePoint::new(100.0, 40.0, 0.8),
+        StrokePoint::new(180.0, 90.0, 0.4),
+    ];
+
+    // 3. Adopt signature
+    app.adopt_signature_from_pad();
+    assert!(
+        app.adopted_signature.is_some(),
+        "Adopted signature must be populated"
+    );
+    assert!(
+        !app.signature_modal_open,
+        "Modal must be closed after adoption"
+    );
+    assert_eq!(app.active_tool, ActiveTool::SignContract);
+
+    // 4. Place signature on page 0
+    app.place_adopted_signature(0, 180.0, 250.0);
+
+    let session = app.session.as_ref().unwrap();
+    assert_eq!(
+        session.visual_signatures.len(),
+        1,
+        "Must contain 1 visual signature"
+    );
+    assert!(
+        session.digital_signature.is_some(),
+        "Must contain digital signature metadata"
+    );
+    assert_eq!(
+        session.digital_signature.as_ref().unwrap().signer_name,
+        "Dr. Jane Smith"
+    );
+
+    // 5. Render UI frame and verify digital badge rendering
+    let ctx = Context::default();
+    let full_output = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+
+    let rendered_texts = extract_all_text_from_shapes(&full_output.shapes);
+    assert!(
+        rendered_texts.iter().any(|t| t.contains("PAdES")),
+        "Must render cryptographic verification badge on signed document canvas"
+    );
+}
