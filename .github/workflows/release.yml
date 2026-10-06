@@ -36,7 +36,7 @@ jobs:
             binary_path: target/x86_64-unknown-linux-gnu/release/kestrel-app
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -56,7 +56,7 @@ jobs:
           cp ${{ matrix.binary_path }} dist/${{ matrix.artifact_name }}
 
       - name: Upload Binary Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/${{ matrix.artifact_name }}
@@ -67,10 +67,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download all built artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
           merge-multiple: true
@@ -80,6 +80,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          EXTRA_FLAGS=""
+          if [[ "$TAG" == *"-rc"* ]]; then
+            EXTRA_FLAGS="--prerelease"
+          fi
           gh release create "$TAG" release-assets/* \
             --title "$TAG" \
-            --generate-notes
+            --generate-notes $EXTRA_FLAGS || gh release upload "$TAG" release-assets/* --clobber
