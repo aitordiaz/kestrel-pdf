@@ -1,6 +1,11 @@
-use kestrel_core::document::DocumentSession;
+use kestrel_core::document::{map_pdf_point_to_visual, DocumentSession};
+use kestrel_core::forms::FormFieldType;
 use kestrel_core::redact::{RedactionEngine, RedactionRect, RedactionTarget};
 use kestrel_core::render::{PageTileKey, RenderPipeline, TileBuffer, TileCache};
+use kestrel_core::synthetic::{
+    generate_synthetic_forms_pdf, generate_synthetic_search_corpus_pdf,
+    generate_synthetic_visual_showcase_pdf, SyntheticPdfBuilder,
+};
 use lopdf::{dictionary, Document, Object, Stream};
 use std::sync::Arc;
 use std::thread;
@@ -658,4 +663,322 @@ fn test_integration_real_documents_if_present() {
             }
         }
     }
+}
+
+#[test]
+fn test_integration_synthetic_visual_showcase_all_orientations() {
+    let pdf_bytes = generate_synthetic_visual_showcase_pdf();
+    assert!(!pdf_bytes.is_empty());
+
+    let session = DocumentSession::open_from_bytes(pdf_bytes, None)
+        .expect("Open synthetic visual showcase PDF");
+
+    assert_eq!(
+        session.page_count, 4,
+        "Should have 4 pages with varying orientations"
+    );
+
+    // Page 0: Portrait (0°), 595.28 x 841.89
+    let p0 = &session.pages[0];
+    assert_eq!(p0.rotation_degrees, 0);
+    assert!((p0.width_pt - 595.28).abs() < 1.0);
+    assert!((p0.height_pt - 841.89).abs() < 1.0);
+    assert_eq!(p0.visual_dimensions(), (p0.width_pt, p0.height_pt));
+
+    let layout0 = session.get_page_layout(0).expect("Layout for page 0");
+    assert!(!layout0.text_runs.is_empty(), "Page 0 must have text runs");
+    assert!(
+        layout0
+            .plain_text
+            .contains("KESTREL-PDF VISUAL ENGINE SPECIFICATION"),
+        "Page 0 must contain main title"
+    );
+    assert!(
+        layout0
+            .plain_text
+            .contains("Section 1: Architecture Overview"),
+        "Page 0 must contain section header"
+    );
+    assert!(
+        layout0.plain_text.contains("VERIFIED"),
+        "Page 0 must contain table metric text"
+    );
+
+    // Vector rects on Page 0 (header bar + table rows)
+    assert!(
+        layout0.rects.len() >= 5,
+        "Page 0 must contain header rect and table grid rows: got {}",
+        layout0.rects.len()
+    );
+
+    // Embedded image on Page 0 (16x16 RGB checkerboard)
+    assert_eq!(
+        layout0.images.len(),
+        1,
+        "Page 0 must extract 1 embedded image"
+    );
+    let img0 = &layout0.images[0];
+    assert_eq!(img0.pixel_width, 16);
+    assert_eq!(img0.pixel_height, 16);
+    assert_eq!(img0.rgba.len(), 16 * 16 * 4);
+    // Check first pixel (Royal Blue [37, 99, 235, 255])
+    assert_eq!(&img0.rgba[0..4], &[37, 99, 235, 255]);
+    // Check second pixel (Amber [245, 158, 11, 255])
+    assert_eq!(&img0.rgba[4..8], &[245, 158, 11, 255]);
+
+    // Page 1: Landscape (90°), 841.89 x 595.28
+    let p1 = &session.pages[1];
+    assert_eq!(p1.rotation_degrees, 90);
+    assert!((p1.width_pt - 841.89).abs() < 1.0);
+    assert!((p1.height_pt - 595.28).abs() < 1.0);
+    // visual_dimensions swaps width and height
+    assert_eq!(p1.visual_dimensions(), (p1.height_pt, p1.width_pt));
+    let layout1 = session.get_page_layout(1).expect("Layout for page 1");
+    assert!(
+        layout1
+            .plain_text
+            .contains("LANDSCAPE MONITORING DASHBOARD"),
+        "Page 1 must contain landscape dashboard text"
+    );
+
+    // Page 2: Inverted Portrait (180°)
+    let p2 = &session.pages[2];
+    assert_eq!(p2.rotation_degrees, 180);
+    let layout2 = session.get_page_layout(2).expect("Layout for page 2");
+    assert!(
+        layout2.plain_text.contains("INVERTED SPECIFICATION SHEET"),
+        "Page 2 must contain inverted title"
+    );
+
+    // Page 3: Inverted Landscape (270°)
+    let p3 = &session.pages[3];
+    assert_eq!(p3.rotation_degrees, 270);
+    assert_eq!(p3.visual_dimensions(), (p3.height_pt, p3.width_pt));
+    let layout3 = session.get_page_layout(3).expect("Layout for page 3");
+    assert!(
+        layout3
+            .plain_text
+            .contains("INVERTED LANDSCAPE LOGISTICS PLAN"),
+        "Page 3 must contain inverted landscape title"
+    );
+}
+
+#[test]
+fn test_integration_synthetic_dynamic_rotation_and_coordinate_mapping() {
+    let mut builder = SyntheticPdfBuilder::new();
+    let p0 = builder.add_page(600.0, 800.0, 0);
+    builder.add_text(p0, "Rotation Test", 50.0, 750.0, 14.0, [0, 0, 0]);
+    let bytes = builder.build().expect("Build PDF");
+
+    let mut session = DocumentSession::open_from_bytes(bytes, None).expect("Open PDF");
+    assert_eq!(session.pages[0].rotation_degrees, 0);
+    assert_eq!(session.pages[0].visual_dimensions(), (600.0, 800.0));
+
+    // Rotate Clockwise
+    session.rotate_page(0, true);
+    assert_eq!(session.pages[0].rotation_degrees, 90);
+    assert_eq!(session.pages[0].visual_dimensions(), (800.0, 600.0));
+
+    session.rotate_page(0, true);
+    assert_eq!(session.pages[0].rotation_degrees, 180);
+    assert_eq!(session.pages[0].visual_dimensions(), (600.0, 800.0));
+
+    session.rotate_page(0, true);
+    assert_eq!(session.pages[0].rotation_degrees, 270);
+    assert_eq!(session.pages[0].visual_dimensions(), (800.0, 600.0));
+
+    session.rotate_page(0, true);
+    assert_eq!(session.pages[0].rotation_degrees, 0);
+    assert_eq!(session.pages[0].visual_dimensions(), (600.0, 800.0));
+
+    // Rotate Counter-Clockwise
+    session.rotate_page(0, false);
+    assert_eq!(session.pages[0].rotation_degrees, 270);
+
+    session.rotate_page(0, false);
+    assert_eq!(session.pages[0].rotation_degrees, 180);
+
+    // Verify coordinate mapping helper
+    let (vx0, vy0) = map_pdf_point_to_visual(50.0, 750.0, 600.0, 800.0, 0);
+    assert_eq!((vx0, vy0), (50.0, 50.0));
+
+    let (vx90, vy90) = map_pdf_point_to_visual(50.0, 750.0, 600.0, 800.0, 90);
+    assert_eq!((vx90, vy90), (750.0, 50.0));
+
+    let (vx180, vy180) = map_pdf_point_to_visual(50.0, 750.0, 600.0, 800.0, 180);
+    assert_eq!((vx180, vy180), (550.0, 750.0));
+
+    let (vx270, vy270) = map_pdf_point_to_visual(50.0, 750.0, 600.0, 800.0, 270);
+    assert_eq!((vx270, vy270), (50.0, 550.0));
+}
+
+#[test]
+fn test_integration_synthetic_forms_lifecycle_roundtrip() {
+    let pdf_bytes = generate_synthetic_forms_pdf();
+    let mut session =
+        DocumentSession::open_from_bytes(pdf_bytes, None).expect("Open synthetic forms PDF");
+
+    assert_eq!(session.forms.len(), 5, "Expected 5 synthetic form fields");
+
+    // 1. Verify initial field state
+    let applicant = session
+        .forms
+        .iter()
+        .find(|f| f.name == "applicant_name")
+        .unwrap();
+    assert_eq!(applicant.value, "Alice Montgomery");
+
+    let organization = session
+        .forms
+        .iter()
+        .find(|f| f.name == "organization_name")
+        .unwrap();
+    assert_eq!(organization.value, "Starlight Dynamics Corp");
+
+    let accept_nda = session
+        .forms
+        .iter()
+        .find(|f| f.name == "accept_nda")
+        .unwrap();
+    assert_eq!(accept_nda.value, "Yes");
+    assert!(matches!(
+        accept_nda.field_type,
+        FormFieldType::CheckBox { checked: true }
+    ));
+
+    let subscribe = session
+        .forms
+        .iter()
+        .find(|f| f.name == "subscribe_updates")
+        .unwrap();
+    assert_eq!(subscribe.value, "Off");
+    assert!(matches!(
+        subscribe.field_type,
+        FormFieldType::CheckBox { checked: false }
+    ));
+
+    let jurisdiction = session
+        .forms
+        .iter()
+        .find(|f| f.name == "jurisdiction")
+        .unwrap();
+    assert_eq!(jurisdiction.value, "European Union (GDPR)");
+
+    // 2. Mutate all fields
+    assert!(session.update_form_field("applicant_name", "Dr. Evelyn Reed"));
+    assert!(session.update_form_field("organization_name", "Quantum Nexus Labs"));
+    assert!(session.update_form_field("accept_nda", "Off"));
+    assert!(session.update_form_field("subscribe_updates", "Yes"));
+    assert!(session.update_form_field("jurisdiction", "Switzerland"));
+
+    // 3. Serialize to PDF binary stream
+    let saved_bytes = session.save_to_bytes().expect("Save mutated forms");
+    assert!(!saved_bytes.is_empty());
+
+    // 4. Reload saved bytes in a completely fresh session
+    let reloaded_session =
+        DocumentSession::open_from_bytes(saved_bytes, None).expect("Reload saved forms PDF");
+
+    assert_eq!(reloaded_session.forms.len(), 5);
+
+    let re_app = reloaded_session
+        .forms
+        .iter()
+        .find(|f| f.name == "applicant_name")
+        .unwrap();
+    assert_eq!(re_app.value, "Dr. Evelyn Reed");
+
+    let re_org = reloaded_session
+        .forms
+        .iter()
+        .find(|f| f.name == "organization_name")
+        .unwrap();
+    assert_eq!(re_org.value, "Quantum Nexus Labs");
+
+    let re_nda = reloaded_session
+        .forms
+        .iter()
+        .find(|f| f.name == "accept_nda")
+        .unwrap();
+    assert_eq!(re_nda.value, "Off");
+    assert!(matches!(
+        re_nda.field_type,
+        FormFieldType::CheckBox { checked: false }
+    ));
+
+    let re_sub = reloaded_session
+        .forms
+        .iter()
+        .find(|f| f.name == "subscribe_updates")
+        .unwrap();
+    assert_eq!(re_sub.value, "Yes");
+    assert!(matches!(
+        re_sub.field_type,
+        FormFieldType::CheckBox { checked: true }
+    ));
+
+    let re_jur = reloaded_session
+        .forms
+        .iter()
+        .find(|f| f.name == "jurisdiction")
+        .unwrap();
+    assert_eq!(re_jur.value, "Switzerland");
+}
+
+#[test]
+fn test_integration_synthetic_search_corpus_multi_page() {
+    let pdf_bytes = generate_synthetic_search_corpus_pdf();
+    let session = DocumentSession::open_from_bytes(pdf_bytes, None)
+        .expect("Open synthetic search corpus PDF");
+
+    assert_eq!(session.page_count, 3);
+
+    // Search Page 0 unique token
+    let res0 = session.search_text("ALPHA_SEARCH_TOKEN_42");
+    assert_eq!(res0.len(), 1);
+    assert_eq!(res0[0].page_index, 0);
+    assert_eq!(res0[0].match_count, 1);
+    assert!(res0[0].snippet.contains("ALPHA_SEARCH_TOKEN_42"));
+
+    // Case-insensitive search
+    let res0_ci = session.search_text("alpha_search_token_42");
+    assert_eq!(res0_ci.len(), 1);
+    assert_eq!(res0_ci[0].page_index, 0);
+
+    // Search Page 1 unique token
+    let res1 = session.search_text("BETA_SECURITY_HASH_99");
+    assert_eq!(res1.len(), 1);
+    assert_eq!(res1[0].page_index, 1);
+    assert_eq!(res1[0].match_count, 1);
+
+    // Multi-occurrence search on Page 1
+    let res_multi = session.search_text("KEYWORD_MULTI_OCCURRENCE");
+    assert_eq!(res_multi.len(), 1);
+    assert_eq!(res_multi[0].page_index, 1);
+    assert_eq!(res_multi[0].match_count, 2);
+
+    // Search Page 2 unique token & Spanish term
+    let res2 = session.search_text("GAMMA_IBAN_SPANISH_ES91");
+    assert_eq!(res2.len(), 1);
+    assert_eq!(res2[0].page_index, 2);
+
+    let res_es = session.search_text("FACTURACIÓN");
+    assert_eq!(res_es.len(), 1);
+    assert_eq!(res_es[0].page_index, 2);
+
+    // Common term across pages
+    let res_pdf = session.search_text("PDF");
+    assert!(
+        res_pdf.len() >= 2,
+        "PDF should appear on multiple pages: got {}",
+        res_pdf.len()
+    );
+
+    // Non-existent search query
+    let no_res = session.search_text("MISSING_QUERY_STRING_UNKNOWN");
+    assert!(no_res.is_empty());
+
+    // Empty search query
+    let empty_res = session.search_text("");
+    assert!(empty_res.is_empty());
 }

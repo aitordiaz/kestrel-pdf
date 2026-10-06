@@ -45,6 +45,7 @@ pub struct KestrelApp {
     pub search_results: Vec<SearchResult>,
     pub pipeline: Arc<RenderPipeline>,
     pub textures: HashMap<PageTileKey, TextureHandle>,
+    pub image_textures: HashMap<(usize, usize), TextureHandle>,
 
     // Phase 2: AcroForms & Contract Signing
     pub signature_modal_open: bool,
@@ -75,6 +76,7 @@ impl Default for KestrelApp {
             search_results: Vec::new(),
             pipeline: Arc::new(RenderPipeline::new(128)),
             textures: HashMap::new(),
+            image_textures: HashMap::new(),
 
             // Signature & Form defaults
             signature_modal_open: false,
@@ -99,10 +101,59 @@ impl KestrelApp {
             self.current_page = if self.total_pages > 0 { 1 } else { 0 };
             self.current_file_name = name;
             self.textures.clear();
+            self.image_textures.clear();
             self.search_results.clear();
             self.adopted_signature = None;
             self.status_toast = Some("Document loaded successfully.".to_string());
             self.session = Some(session);
+        }
+    }
+
+    /// Zooms in by 15% (max 5.0x / 500%).
+    pub fn zoom_in(&mut self) {
+        self.zoom_level = (self.zoom_level * 1.15).min(5.0);
+    }
+
+    /// Zooms out by 15% (min 0.1x / 10%).
+    pub fn zoom_out(&mut self) {
+        self.zoom_level = (self.zoom_level / 1.15).max(0.1);
+    }
+
+    /// Resets zoom to 100% (1.0x).
+    pub fn reset_zoom(&mut self) {
+        self.zoom_level = 1.0;
+    }
+
+    /// Sets explicit zoom level clamped between 0.1 and 5.0.
+    pub fn set_zoom(&mut self, level: f32) {
+        self.zoom_level = level.clamp(0.1, 5.0);
+    }
+
+    /// Rotates the current page 90 degrees clockwise.
+    pub fn rotate_current_page_clockwise(&mut self) {
+        if let Some(session) = &mut self.session {
+            let idx = self.current_page.saturating_sub(1);
+            session.rotate_page(idx, true);
+            let rot = session
+                .pages
+                .get(idx)
+                .map(|p| p.rotation_degrees)
+                .unwrap_or(0);
+            self.status_toast = Some(format!("Page {} rotated to {}°", self.current_page, rot));
+        }
+    }
+
+    /// Rotates the current page 90 degrees counter-clockwise.
+    pub fn rotate_current_page_counter_clockwise(&mut self) {
+        if let Some(session) = &mut self.session {
+            let idx = self.current_page.saturating_sub(1);
+            session.rotate_page(idx, false);
+            let rot = session
+                .pages
+                .get(idx)
+                .map(|p| p.rotation_degrees)
+                .unwrap_or(0);
+            self.status_toast = Some(format!("Page {} rotated to {}°", self.current_page, rot));
         }
     }
 
@@ -304,12 +355,12 @@ impl KestrelApp {
 
                 // Right aligned Zoom & Page info
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("➕").clicked() {
-                        self.zoom_level = (self.zoom_level * 1.15).min(10.0);
+                    if ui.button("➕").on_hover_text("Zoom In").clicked() {
+                        self.zoom_in();
                     }
                     ui.label(format!("{:.0}%", self.zoom_level * 100.0));
-                    if ui.button("➖").clicked() {
-                        self.zoom_level = (self.zoom_level / 1.15).max(0.1);
+                    if ui.button("➖").on_hover_text("Zoom Out").clicked() {
+                        self.zoom_out();
                     }
                     if ui.button("Fit Page").clicked() {
                         self.pending_fit = Some(FitMode::FitPage);
@@ -318,7 +369,24 @@ impl KestrelApp {
                         self.pending_fit = Some(FitMode::FitWidth);
                     }
                     if ui.button("Reset").clicked() {
-                        self.zoom_level = 1.0;
+                        self.reset_zoom();
+                    }
+
+                    ui.separator();
+
+                    if ui
+                        .button("⟳")
+                        .on_hover_text("Rotate Clockwise (90°)")
+                        .clicked()
+                    {
+                        self.rotate_current_page_clockwise();
+                    }
+                    if ui
+                        .button("⟲")
+                        .on_hover_text("Rotate Counter-Clockwise (90°)")
+                        .clicked()
+                    {
+                        self.rotate_current_page_counter_clockwise();
                     }
 
                     ui.separator();
@@ -547,7 +615,7 @@ impl KestrelApp {
                         .session
                         .as_ref()
                         .and_then(|s| s.pages.get(self.current_page.saturating_sub(1)))
-                        .map(|p| (p.width_pt, p.height_pt))
+                        .map(|p| p.visual_dimensions())
                         .unwrap_or((595.28, 841.89));
 
                     let avail = ui.available_size();
@@ -571,15 +639,17 @@ impl KestrelApp {
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
                             for page_idx in 0..self.total_pages {
-                                let (page_w, page_h) = if let Some(session) = &self.session {
-                                    if let Some(p) = session.pages.get(page_idx) {
-                                        (p.width_pt, p.height_pt)
+                                let (page_w, page_h, page_rot) =
+                                    if let Some(session) = &self.session {
+                                        if let Some(p) = session.pages.get(page_idx) {
+                                            let (vw, vh) = p.visual_dimensions();
+                                            (vw, vh, p.rotation_degrees)
+                                        } else {
+                                            (595.28, 841.89, 0)
+                                        }
                                     } else {
-                                        (595.28, 841.89)
-                                    }
-                                } else {
-                                    (595.28, 841.89)
-                                };
+                                        (595.28, 841.89, 0)
+                                    };
                                 let base_width = page_w * self.zoom_level;
                                 let base_height = page_h * self.zoom_level;
 
@@ -661,25 +731,110 @@ impl KestrelApp {
                                     );
                                 }
 
-                                // 3. Draw Vector Rectangles (borders, table grid cells, headers)
+                                // 3. Draw Embedded Raster Images
+                                if let Some(session) = &self.session {
+                                    if let Some(layout) = session.get_page_layout(page_idx) {
+                                        for (img_idx, img) in layout.images.iter().enumerate() {
+                                            let t_key = (page_idx, img_idx);
+                                            let texture = self
+                                                .image_textures
+                                                .entry(t_key)
+                                                .or_insert_with(|| {
+                                                    let color_image =
+                                                        ColorImage::from_rgba_unmultiplied(
+                                                            [
+                                                                img.pixel_width as usize,
+                                                                img.pixel_height as usize,
+                                                            ],
+                                                            &img.rgba,
+                                                        );
+                                                    ctx.load_texture(
+                                                        format!(
+                                                            "page_img_{}_{}",
+                                                            page_idx, img_idx
+                                                        ),
+                                                        color_image,
+                                                        TextureOptions::LINEAR,
+                                                    )
+                                                });
+
+                                            let (vx, vy) =
+                                                kestrel_core::document::map_pdf_point_to_visual(
+                                                    img.x,
+                                                    img.y + img.height,
+                                                    layout.width_pt,
+                                                    layout.height_pt,
+                                                    page_rot,
+                                                );
+                                            let (iw, ih) = if page_rot % 180 == 90 {
+                                                (
+                                                    img.height * self.zoom_level,
+                                                    img.width * self.zoom_level,
+                                                )
+                                            } else {
+                                                (
+                                                    img.width * self.zoom_level,
+                                                    img.height * self.zoom_level,
+                                                )
+                                            };
+
+                                            let img_rect = egui::Rect::from_min_size(
+                                                egui::pos2(
+                                                    rect.left() + vx * self.zoom_level,
+                                                    rect.top() + vy * self.zoom_level,
+                                                ),
+                                                Vec2::new(iw.abs(), ih.abs()),
+                                            );
+
+                                            painter.image(
+                                                texture.id(),
+                                                img_rect,
+                                                egui::Rect::from_min_max(
+                                                    egui::pos2(0.0, 0.0),
+                                                    egui::pos2(1.0, 1.0),
+                                                ),
+                                                Color32::WHITE,
+                                            );
+                                        }
+                                    }
+                                }
+
+                                // 4. Draw Vector Rectangles (borders, table grid cells, headers)
                                 if let Some(session) = &self.session {
                                     if let Some(layout) = session.get_page_layout(page_idx) {
                                         for r in &layout.rects {
-                                            let c_x = rect.left() + r.x * self.zoom_level;
-                                            let c_y = rect.top()
-                                                + (page_h - (r.y + r.height)) * self.zoom_level;
-                                            let c_w = (r.width * self.zoom_level).abs();
-                                            let c_h = (r.height * self.zoom_level).abs();
+                                            let (vx, vy) =
+                                                kestrel_core::document::map_pdf_point_to_visual(
+                                                    r.x,
+                                                    r.y + r.height,
+                                                    layout.width_pt,
+                                                    layout.height_pt,
+                                                    page_rot,
+                                                );
+                                            let (rw, rh) = if page_rot % 180 == 90 {
+                                                (
+                                                    r.height * self.zoom_level,
+                                                    r.width * self.zoom_level,
+                                                )
+                                            } else {
+                                                (
+                                                    r.width * self.zoom_level,
+                                                    r.height * self.zoom_level,
+                                                )
+                                            };
                                             let r_rect = egui::Rect::from_min_size(
-                                                egui::pos2(c_x, c_y),
-                                                Vec2::new(c_w, c_h),
+                                                egui::pos2(
+                                                    rect.left() + vx * self.zoom_level,
+                                                    rect.top() + vy * self.zoom_level,
+                                                ),
+                                                Vec2::new(rw.abs(), rh.abs()),
                                             );
 
                                             if let Some(fill) = r.fill_color {
                                                 // Avoid repainting whole page white background
                                                 if !(fill == [255, 255, 255]
-                                                    && c_w >= base_width * 0.98
-                                                    && c_h >= base_height * 0.98)
+                                                    && rw.abs() >= base_width * 0.98
+                                                    && rh.abs() >= base_height * 0.98)
                                                 {
                                                     painter.rect_filled(
                                                         r_rect,
@@ -708,17 +863,48 @@ impl KestrelApp {
                                     }
                                 }
 
-                                // 4. Render PDF Positioned Text Content
+                                // 5. Render PDF Positioned Text Content & Search Highlighting
                                 if let Some(session) = &self.session {
                                     if let Some(layout) = session.get_page_layout(page_idx) {
                                         if !layout.text_runs.is_empty() {
                                             for tr in &layout.text_runs {
-                                                let t_x = rect.left() + tr.x * self.zoom_level;
                                                 let font_size = (tr.font_size * self.zoom_level)
                                                     .clamp(6.0, 72.0);
-                                                let t_y = rect.top()
-                                                    + (page_h - tr.y - tr.font_size * 0.85)
-                                                        * self.zoom_level;
+                                                let (vx, vy) =
+                                                    kestrel_core::document::map_pdf_point_to_visual(
+                                                        tr.x,
+                                                        tr.y + tr.font_size * 0.85,
+                                                        layout.width_pt,
+                                                        layout.height_pt,
+                                                        page_rot,
+                                                    );
+                                                let t_x = rect.left() + vx * self.zoom_level;
+                                                let t_y = rect.top() + vy * self.zoom_level;
+
+                                                // Live search visual highlight
+                                                if !self.search_query.trim().is_empty()
+                                                    && tr
+                                                        .text
+                                                        .to_lowercase()
+                                                        .contains(&self.search_query.to_lowercase())
+                                                {
+                                                    let approx_w = (tr.text.chars().count() as f32)
+                                                        * font_size
+                                                        * 0.55
+                                                        + 4.0;
+                                                    let hl_rect = egui::Rect::from_min_size(
+                                                        egui::pos2(t_x - 2.0, t_y - 1.0),
+                                                        Vec2::new(approx_w, font_size + 2.0),
+                                                    );
+                                                    painter.rect_filled(
+                                                        hl_rect,
+                                                        2.0,
+                                                        Color32::from_rgba_unmultiplied(
+                                                            255, 235, 59, 140,
+                                                        ),
+                                                    );
+                                                }
+
                                                 let font_id = egui::FontId::proportional(font_size);
                                                 let color = Color32::from_rgb(
                                                     tr.color[0],
@@ -775,20 +961,39 @@ impl KestrelApp {
                                     }
                                 }
 
-                                // 5. Interactive AcroForm Widgets on Page
+                                // 6. Interactive AcroForm Widgets on Page
                                 if let Some(session) = &mut self.session {
+                                    let (orig_w, orig_h) = session
+                                        .pages
+                                        .get(page_idx)
+                                        .map(|p| (p.width_pt, p.height_pt))
+                                        .unwrap_or((595.28, 841.89));
+
                                     for field in &mut session.forms {
                                         if field.page_index == page_idx as u16 {
-                                            // Map PDF coordinates [llx, lly, urx, ury] to egui canvas
-                                            let f_x = rect.left() + field.rect[0] * self.zoom_level;
-                                            let f_y = rect.top()
-                                                + (page_h - field.rect[3]) * self.zoom_level;
-                                            let f_w = ((field.rect[2] - field.rect[0])
-                                                * self.zoom_level)
-                                                .max(24.0);
-                                            let f_h = ((field.rect[3] - field.rect[1])
-                                                * self.zoom_level)
-                                                .max(20.0);
+                                            let (vx, vy) =
+                                                kestrel_core::document::map_pdf_point_to_visual(
+                                                    field.rect[0],
+                                                    field.rect[3],
+                                                    orig_w,
+                                                    orig_h,
+                                                    page_rot,
+                                                );
+                                            let fw = (field.rect[2] - field.rect[0]).abs();
+                                            let fh = (field.rect[3] - field.rect[1]).abs();
+                                            let (f_w, f_h) = if page_rot % 180 == 90 {
+                                                (
+                                                    (fh * self.zoom_level).max(20.0),
+                                                    (fw * self.zoom_level).max(24.0),
+                                                )
+                                            } else {
+                                                (
+                                                    (fw * self.zoom_level).max(24.0),
+                                                    (fh * self.zoom_level).max(20.0),
+                                                )
+                                            };
+                                            let f_x = rect.left() + vx * self.zoom_level;
+                                            let f_y = rect.top() + vy * self.zoom_level;
                                             let field_rect = egui::Rect::from_min_size(
                                                 egui::pos2(f_x, f_y),
                                                 Vec2::new(f_w, f_h),
