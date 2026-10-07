@@ -733,8 +733,25 @@ fn convert_image_bytes_to_rgba(
     width: u32,
     height: u32,
     colorspace: &str,
+    smask_bytes: Option<&[u8]>,
 ) -> Vec<u8> {
     let pixel_count = (width * height) as usize;
+
+    // 1. If bytes represent a standard image container (e.g., JPEG DCTDecode), decode via image crate
+    if raw_bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        if let Ok(dynamic_img) = image::load_from_memory(raw_bytes) {
+            let mut decoded_rgba = dynamic_img.to_rgba8().into_raw();
+            if let Some(smask) = smask_bytes {
+                if smask.len() >= pixel_count && decoded_rgba.len() >= pixel_count * 4 {
+                    for (i, &a) in smask.iter().take(pixel_count).enumerate() {
+                        decoded_rgba[i * 4 + 3] = a;
+                    }
+                }
+            }
+            return decoded_rgba;
+        }
+    }
+
     let mut rgba = Vec::with_capacity(pixel_count * 4);
 
     if colorspace.contains("RGB") || colorspace.is_empty() {
@@ -751,6 +768,18 @@ fn convert_image_bytes_to_rgba(
             rgba.push(g);
             rgba.push(255);
         }
+    } else if colorspace.contains("CMYK") {
+        for chunk in raw_bytes.chunks_exact(4) {
+            let c = chunk[0] as f32 / 255.0;
+            let m = chunk[1] as f32 / 255.0;
+            let y = chunk[2] as f32 / 255.0;
+            let k = chunk[3] as f32 / 255.0;
+            let rgb = cmyk_to_rgb(c, m, y, k);
+            rgba.push(rgb[0]);
+            rgba.push(rgb[1]);
+            rgba.push(rgb[2]);
+            rgba.push(255);
+        }
     } else if raw_bytes.len() >= pixel_count * 4 {
         rgba.extend_from_slice(&raw_bytes[..pixel_count * 4]);
     } else {
@@ -762,6 +791,16 @@ fn convert_image_bytes_to_rgba(
     if rgba.len() < pixel_count * 4 {
         rgba.resize(pixel_count * 4, 255);
     }
+
+    // Apply Soft Mask (alpha transparency channel) if present
+    if let Some(smask) = smask_bytes {
+        if smask.len() >= pixel_count && rgba.len() >= pixel_count * 4 {
+            for (i, &a) in smask.iter().take(pixel_count).enumerate() {
+                rgba[i * 4 + 3] = a;
+            }
+        }
+    }
+
     rgba
 }
 
@@ -1152,32 +1191,54 @@ pub fn extract_page_layout(
                                                 .get(b"ColorSpace")
                                                 .and_then(Object::as_name_str)
                                                 .unwrap_or("DeviceRGB");
-                                            let rgba =
-                                                convert_image_bytes_to_rgba(&raw_bytes, pw, ph, cs);
+
+                                            let smask_bytes: Option<Vec<u8>> =
+                                                if let Ok(smask_obj) =
+                                                    xobj_stream.dict.get(b"SMask")
+                                                {
+                                                    let smask_stream = match smask_obj {
+                                                        Object::Reference(r) => doc
+                                                            .get_object(*r)
+                                                            .and_then(Object::as_stream)
+                                                            .ok(),
+                                                        Object::Stream(s) => Some(s),
+                                                        _ => None,
+                                                    };
+                                                    smask_stream
+                                                        .and_then(|s| decompress_pdf_stream(s).ok())
+                                                } else {
+                                                    None
+                                                };
+
+                                            let rgba = convert_image_bytes_to_rgba(
+                                                &raw_bytes,
+                                                pw,
+                                                ph,
+                                                cs,
+                                                smask_bytes.as_deref(),
+                                            );
                                             if !rgba.is_empty() {
-                                                let (wx, wy) =
-                                                    transform_point(&gstate.ctm, 0.0, 0.0);
-                                                let scale_w = (gstate.ctm[0].powi(2)
-                                                    + gstate.ctm[1].powi(2))
-                                                .sqrt()
-                                                .abs();
-                                                let scale_h = (gstate.ctm[2].powi(2)
-                                                    + gstate.ctm[3].powi(2))
-                                                .sqrt()
-                                                .abs();
+                                                let p0 = transform_point(&gstate.ctm, 0.0, 0.0);
+                                                let p1 = transform_point(&gstate.ctm, 1.0, 0.0);
+                                                let p2 = transform_point(&gstate.ctm, 1.0, 1.0);
+                                                let p3 = transform_point(&gstate.ctm, 0.0, 1.0);
+
+                                                let min_x =
+                                                    p0.0.min(p1.0).min(p2.0).min(p3.0) - media_x0;
+                                                let max_x =
+                                                    p0.0.max(p1.0).max(p2.0).max(p3.0) - media_x0;
+                                                let min_y =
+                                                    p0.1.min(p1.1).min(p2.1).min(p3.1) - media_y0;
+                                                let max_y =
+                                                    p0.1.max(p1.1).max(p2.1).max(p3.1) - media_y0;
+                                                let w = max_x - min_x;
+                                                let h = max_y - min_y;
+
                                                 images.push(VisualImage {
-                                                    x: wx - media_x0,
-                                                    y: wy - media_y0,
-                                                    width: if scale_w > 0.01 {
-                                                        scale_w
-                                                    } else {
-                                                        pw as f32
-                                                    },
-                                                    height: if scale_h > 0.01 {
-                                                        scale_h
-                                                    } else {
-                                                        ph as f32
-                                                    },
+                                                    x: min_x,
+                                                    y: min_y,
+                                                    width: if w > 0.01 { w } else { pw as f32 },
+                                                    height: if h > 0.01 { h } else { ph as f32 },
                                                     pixel_width: pw,
                                                     pixel_height: ph,
                                                     rgba,

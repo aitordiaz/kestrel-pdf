@@ -11,6 +11,7 @@ When an AI agent or engineer pauses work or transfers context to another agent, 
 | Number | Title | Version | Date | Status | Summary |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **[0001](0001-v0.2.4-synthetic-suite-and-release.md)** | [v0.2.4 Release & Synthetic Suite Fortification](0001-v0.2.4-synthetic-suite-and-release.md) | v0.2.4 | 2026-10-06 | **Completed** | 28 automated tests passing, synthetic PDF generator engine, cross-platform releases published. |
+| **[0002](0002-v0.2.6-image-placement-and-form-fidelity.md)** | [Image Placement, Alpha SMask & AcroForm Layout Fidelity](0002-v0.2.6-image-placement-and-form-fidelity.md) | v0.2.6 | 2026-10-07 | **Completed** | 32 automated tests passing, fixed inverted CTM image placement, SMask alpha, and form text occlusion. |
 
 ---
 

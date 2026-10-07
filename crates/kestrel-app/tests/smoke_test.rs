@@ -764,3 +764,68 @@ fn test_e2e_full_lifecycle_stress_session() {
         .expect("Save stress PDF");
     assert!(!saved.is_empty());
 }
+
+#[test]
+fn test_e2e_form_field_compact_geometry_and_non_occlusion() {
+    use kestrel_core::forms::FormField;
+    use kestrel_core::synthetic::SyntheticPdfBuilder;
+
+    let mut builder = SyntheticPdfBuilder::new();
+    let p0 = builder.add_page(595.0, 842.0, 0);
+    // Background text run that sits right under/near the form field
+    builder.add_text(
+        p0,
+        "Underlying Document Underscore Line ______",
+        100.0,
+        650.0,
+        10.0,
+        [0, 0, 0],
+    );
+    let bytes = builder.build().expect("Build PDF");
+
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(bytes, Some("compact_form.pdf".to_string()));
+
+    // Inject compact form field (height = 11.5 pt)
+    if let Some(session) = &mut app.session {
+        session.add_form_field(FormField::new_text(
+            "compact_input",
+            "Compact Input",
+            0,
+            "Filled Value",
+            [100.0, 646.0, 300.0, 657.5],
+            false,
+        ));
+    }
+
+    let ctx = Context::default();
+
+    // 1. In Pan mode: background text must be present, and NO opaque 200-alpha background shape
+    app.active_tool = ActiveTool::Pan;
+    let out_pan = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let texts_pan = extract_all_text_from_shapes(&out_pan.shapes);
+    assert!(
+        texts_pan
+            .iter()
+            .any(|t| t.contains("Underlying Document Underscore Line")),
+        "Background text must be visible in Pan mode"
+    );
+    assert!(
+        texts_pan.iter().any(|t| t.contains("Filled Value")),
+        "Form value must be visible"
+    );
+
+    // Verify no shape has opaque 200-alpha fill
+    let has_opaque_form_fill = out_pan.shapes.iter().any(|cs| match &cs.shape {
+        egui::epaint::Shape::Rect(rect_shape) => {
+            rect_shape.fill == Color32::from_rgba_unmultiplied(239, 246, 255, 200)
+        }
+        _ => false,
+    });
+    assert!(
+        !has_opaque_form_fill,
+        "Form field must not render opaque 200-alpha background"
+    );
+}

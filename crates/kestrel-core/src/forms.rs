@@ -261,6 +261,21 @@ fn parse_field_object(
     parse_widget_dict(dict, &name, page_index)
 }
 
+#[allow(clippy::chunks_exact_to_as_chunks)]
+fn decode_pdf_form_string(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xfe, 0xff]) {
+        let u16s: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        String::from_utf16_lossy(&u16s)
+    } else if let Ok(s) = std::str::from_utf8(bytes) {
+        s.to_string()
+    } else {
+        lopdf::Document::decode_text(None, bytes)
+    }
+}
+
 fn parse_widget_dict(dict: &Dictionary, name: &str, page_index: u16) -> Option<FormField> {
     let ft = dict
         .get(b"FT")
@@ -276,7 +291,7 @@ fn parse_widget_dict(dict: &Dictionary, name: &str, page_index: u16) -> Option<F
     let val_str = dict
         .get(b"V")
         .map(|v| match v {
-            Object::String(bytes, _) => String::from_utf8_lossy(bytes).to_string(),
+            Object::String(bytes, _) => decode_pdf_form_string(bytes),
             Object::Name(name_bytes) => String::from_utf8_lossy(name_bytes).to_string(),
             Object::Integer(i) => i.to_string(),
             Object::Real(r) => r.to_string(),
