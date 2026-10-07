@@ -94,7 +94,28 @@ impl Default for KestrelApp {
     }
 }
 
+/// Truncates a filename in the middle with an ellipsis ('…'), preserving the prefix and extension.
+pub fn truncate_filename_middle(name: &str, max_len: usize) -> String {
+    let char_count = name.chars().count();
+    if char_count <= max_len || max_len < 10 {
+        return name.to_string();
+    }
+    let chars: Vec<char> = name.chars().collect();
+    let keep_front = (max_len - 1) / 2;
+    let keep_back = max_len - 1 - keep_front;
+    let front: String = chars[..keep_front].iter().collect();
+    let back: String = chars[chars.len() - keep_back..].iter().collect();
+    format!("{}…{}", front, back)
+}
+
 impl KestrelApp {
+    /// Returns the truncated title text for compact UI display.
+    pub fn compact_title_text(&self) -> String {
+        match &self.current_file_name {
+            Some(name) => truncate_filename_middle(name, 48),
+            None => "Kestrel-PDF".to_string(),
+        }
+    }
     /// Loads a PDF from raw byte buffer (desktop or WASM).
     pub fn load_document_bytes(&mut self, bytes: Vec<u8>, name: Option<String>) {
         if let Ok(session) = DocumentSession::open_from_bytes(bytes, None) {
@@ -292,34 +313,118 @@ impl KestrelApp {
         // Poll for newly rasterized background tiles
         self.pipeline.process_incoming_tiles();
 
-        // 1. Top Toolbar
-        egui::TopBottomPanel::top("top_toolbar").show(ctx, |ui| {
+        // 1. Tier 1: Application Header Bar (Branding, Sidebar Toggle, Document Title, File Operations)
+        egui::TopBottomPanel::top("app_header").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading(self.title_bar_text());
+                // Left: Sidebar Toggle & Branding
+                let sidebar_label = if self.sidebar_open {
+                    "◀ Sidebar"
+                } else {
+                    "▶ Sidebar"
+                };
+                if ui
+                    .button(sidebar_label)
+                    .on_hover_text(
+                        "Toggle document sidebar (Thumbnails, Outlines, Forms, Layers, Search)",
+                    )
+                    .clicked()
+                {
+                    self.sidebar_open = !self.sidebar_open;
+                }
+
+                ui.label(egui::RichText::new("🦅 Kestrel-PDF").strong());
                 ui.separator();
 
-                if ui.button("📂 Open File").clicked() {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("PDF Documents", &["pdf"])
-                        .pick_file()
+                // Right: File Action Buttons
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.session.is_some()
+                        && ui
+                            .button("💾 Save / Export")
+                            .on_hover_text("Save modified PDF to disk")
+                            .clicked()
                     {
-                        if let Ok(bytes) = std::fs::read(&path) {
-                            let name = path.file_name().map(|n| n.to_string_lossy().to_string());
-                            self.load_document_bytes(bytes, name);
+                        self.save_document();
+                    }
+
+                    if ui
+                        .button("📂 Open File")
+                        .on_hover_text("Open PDF document from disk")
+                        .clicked()
+                    {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("PDF Documents", &["pdf"])
+                            .pick_file()
+                        {
+                            if let Ok(bytes) = std::fs::read(&path) {
+                                let name =
+                                    path.file_name().map(|n| n.to_string_lossy().to_string());
+                                self.load_document_bytes(bytes, name);
+                            }
                         }
                     }
-                }
 
-                if self.session.is_some() && ui.button("💾 Save / Export").clicked() {
-                    self.save_document();
+                    ui.separator();
+
+                    // Center: Document Title Heading (with middle truncation if long and rich tooltip)
+                    if let Some(name) = &self.current_file_name {
+                        let display_title = truncate_filename_middle(name, 48);
+                        ui.heading(display_title).on_hover_text(format!(
+                            "Document: {}\nTotal Pages: {}",
+                            name, self.total_pages
+                        ));
+                    } else {
+                        ui.heading("No document open");
+                    }
+                });
+            });
+        });
+
+        // 2. Tier 2: Document Action & Navigation Ribbon
+        egui::TopBottomPanel::top("action_toolbar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                // Group 1: Page Navigation & Orientation
+                if self.total_pages > 0 {
+                    if ui.button("⬅ Prev").on_hover_text("Previous Page").clicked()
+                        && self.current_page > 1
+                    {
+                        self.current_page -= 1;
+                    }
+                    ui.label(format!("Page {} / {}", self.current_page, self.total_pages))
+                        .on_hover_text("Current page / Total pages");
+                    if ui.button("Next ➡").on_hover_text("Next Page").clicked()
+                        && self.current_page < self.total_pages
+                    {
+                        self.current_page += 1;
+                    }
+                } else {
+                    ui.label("Page 0 / 0");
                 }
 
                 ui.separator();
 
-                // Tool Selector
-                ui.selectable_value(&mut self.active_tool, ActiveTool::Pan, "✋ Pan");
-                ui.selectable_value(&mut self.active_tool, ActiveTool::SelectText, "📝 Select");
+                if ui
+                    .button("⟲")
+                    .on_hover_text("Rotate Counter-Clockwise (90°)")
+                    .clicked()
+                {
+                    self.rotate_current_page_counter_clockwise();
+                }
+                if ui
+                    .button("⟳")
+                    .on_hover_text("Rotate Clockwise (90°)")
+                    .clicked()
+                {
+                    self.rotate_current_page_clockwise();
+                }
+
+                ui.separator();
+
+                // Group 2: Segmented Tool Mode Selector (Pill style)
+                ui.selectable_value(&mut self.active_tool, ActiveTool::Pan, "✋ Pan")
+                    .on_hover_text("Pan & scroll through document");
+                ui.selectable_value(&mut self.active_tool, ActiveTool::SelectText, "📝 Select")
+                    .on_hover_text("Select and copy text");
 
                 let form_count = self.session.as_ref().map(|s| s.forms.len()).unwrap_or(0);
                 let form_label = if form_count > 0 {
@@ -327,9 +432,11 @@ impl KestrelApp {
                 } else {
                     "📋 Forms".to_string()
                 };
-                ui.selectable_value(&mut self.active_tool, ActiveTool::FormFill, form_label);
+                ui.selectable_value(&mut self.active_tool, ActiveTool::FormFill, form_label)
+                    .on_hover_text("Fill interactive form fields and checkboxes");
 
-                ui.selectable_value(&mut self.active_tool, ActiveTool::EditText, "✏️ Edit Text");
+                ui.selectable_value(&mut self.active_tool, ActiveTool::EditText, "✏️ Edit Text")
+                    .on_hover_text("Add or edit text annotations");
 
                 if ui
                     .selectable_value(
@@ -337,6 +444,7 @@ impl KestrelApp {
                         ActiveTool::SignContract,
                         "✍️ Sign Contract",
                     )
+                    .on_hover_text("Sign contract with drawn or digital signature")
                     .clicked()
                     && self.adopted_signature.is_none()
                 {
@@ -344,72 +452,64 @@ impl KestrelApp {
                 }
 
                 if self.active_tool == ActiveTool::SignContract
-                    && ui.button("🖊 Create Signature").clicked()
+                    && ui
+                        .button("🖊 Create Signature")
+                        .on_hover_text("Open Signature Pad")
+                        .clicked()
                 {
                     self.signature_modal_open = true;
                 }
 
-                ui.selectable_value(&mut self.active_tool, ActiveTool::RedactData, "🛡️ Redact");
+                ui.selectable_value(&mut self.active_tool, ActiveTool::RedactData, "🛡️ Redact")
+                    .on_hover_text("Permanently redact sensitive document data");
 
-                ui.separator();
-
-                // Live search bar
-                ui.label("🔍");
-                let search_resp = ui.text_edit_singleline(&mut self.search_query);
-                if search_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    self.execute_search();
-                }
-                if ui.button("Find").clicked() {
-                    self.execute_search();
-                }
-
-                // Right aligned Zoom & Page info
+                // Group 3 & 4: Zoom Controls & Live Search (Right aligned)
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("➕").on_hover_text("Zoom In").clicked() {
+                    if ui.button("➕").on_hover_text("Zoom In (+15%)").clicked() {
                         self.zoom_in();
                     }
-                    ui.label(format!("{:.0}%", self.zoom_level * 100.0));
-                    if ui.button("➖").on_hover_text("Zoom Out").clicked() {
+                    ui.label(format!("{:.0}%", self.zoom_level * 100.0))
+                        .on_hover_text("Current zoom percentage");
+                    if ui.button("➖").on_hover_text("Zoom Out (-15%)").clicked() {
                         self.zoom_out();
                     }
-                    if ui.button("Fit Page").clicked() {
+                    if ui
+                        .button("Fit Page")
+                        .on_hover_text("Fit entire page to viewport")
+                        .clicked()
+                    {
                         self.pending_fit = Some(FitMode::FitPage);
                     }
-                    if ui.button("Fit Width").clicked() {
+                    if ui
+                        .button("Fit Width")
+                        .on_hover_text("Fit document width to viewport")
+                        .clicked()
+                    {
                         self.pending_fit = Some(FitMode::FitWidth);
                     }
-                    if ui.button("Reset").clicked() {
+                    if ui
+                        .button("Reset")
+                        .on_hover_text("Reset zoom to 100%")
+                        .clicked()
+                    {
                         self.reset_zoom();
                     }
 
                     ui.separator();
 
-                    if ui
-                        .button("⟳")
-                        .on_hover_text("Rotate Clockwise (90°)")
-                        .clicked()
-                    {
-                        self.rotate_current_page_clockwise();
+                    // Search Bar
+                    if ui.button("Find").on_hover_text("Execute search").clicked() {
+                        self.execute_search();
                     }
-                    if ui
-                        .button("⟲")
-                        .on_hover_text("Rotate Counter-Clockwise (90°)")
-                        .clicked()
-                    {
-                        self.rotate_current_page_counter_clockwise();
+                    let search_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.search_query)
+                            .hint_text("Search…")
+                            .desired_width(110.0),
+                    );
+                    if search_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        self.execute_search();
                     }
-
-                    ui.separator();
-
-                    if self.total_pages > 0 {
-                        if ui.button("Next ➡").clicked() && self.current_page < self.total_pages {
-                            self.current_page += 1;
-                        }
-                        ui.label(format!("Page {} / {}", self.current_page, self.total_pages));
-                        if ui.button("⬅ Prev").clicked() && self.current_page > 1 {
-                            self.current_page -= 1;
-                        }
-                    }
+                    ui.label("🔍");
                 });
             });
         });
