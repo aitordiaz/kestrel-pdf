@@ -54,14 +54,14 @@ Kestrel-PDF is developed following a rigorous agentic methodology documented in 
 
 ---
 
-## 🏆 Testing Trophy Suite (28 Tests Across Workspace)
+## 🏆 Testing Trophy Suite (32 Tests Across Workspace)
 
 Kestrel-PDF enforces a robust multi-tiered testing battery verified on Linux, macOS, and Windows runners:
 
 ```
-            /  End-to-End Smoke Tests (12 tests)  \   <- kestrel-app (Headless UI frames, zoom, rotation, forms, search)
+            /  End-to-End Smoke Tests (13 tests)  \   <- kestrel-app (Headless UI frames, zoom, rotation, forms, search)
            /---------------------------------------\
-          /      Integration Tests (16 tests)       \  <- kestrel-core (Synthetic showcase, PAdES, AcroForms, LRU cache)
+          /      Integration Tests (19 tests)       \  <- kestrel-core (Synthetic showcase, PAdES, AcroForms, LRU cache)
          /-------------------------------------------\
         /             Unit Tests & Math               \ <- Splines, coordinates, UTF-8 strings
        /-----------------------------------------------\

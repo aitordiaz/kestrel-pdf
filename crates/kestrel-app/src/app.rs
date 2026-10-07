@@ -982,39 +982,40 @@ impl KestrelApp {
                                             let fw = (field.rect[2] - field.rect[0]).abs();
                                             let fh = (field.rect[3] - field.rect[1]).abs();
                                             let (f_w, f_h) = if page_rot % 180 == 90 {
-                                                (
-                                                    (fh * self.zoom_level).max(20.0),
-                                                    (fw * self.zoom_level).max(24.0),
-                                                )
+                                                (fh * self.zoom_level, fw * self.zoom_level)
                                             } else {
-                                                (
-                                                    (fw * self.zoom_level).max(24.0),
-                                                    (fh * self.zoom_level).max(20.0),
-                                                )
+                                                (fw * self.zoom_level, fh * self.zoom_level)
                                             };
                                             let f_x = rect.left() + vx * self.zoom_level;
                                             let f_y = rect.top() + vy * self.zoom_level;
                                             let field_rect = egui::Rect::from_min_size(
                                                 egui::pos2(f_x, f_y),
-                                                Vec2::new(f_w, f_h),
+                                                Vec2::new(f_w.max(1.0), f_h.max(1.0)),
                                             );
 
-                                            // Draw subtle background and border for interactive widget
-                                            painter.rect_filled(
-                                                field_rect,
-                                                2.0,
-                                                Color32::from_rgba_unmultiplied(239, 246, 255, 200),
-                                            );
-                                            painter.rect_stroke(
-                                                field_rect,
-                                                2.0,
-                                                egui::Stroke::new(
-                                                    1.0_f32,
-                                                    Color32::from_rgb(96, 165, 250),
-                                                ),
-                                            );
+                                            // In FormFill mode, draw subtle translucent tint and border to indicate editable field
+                                            // without occluding underlying text, guidelines, or form outlines.
+                                            if self.active_tool == ActiveTool::FormFill {
+                                                painter.rect_filled(
+                                                    field_rect,
+                                                    1.0,
+                                                    Color32::from_rgba_unmultiplied(
+                                                        219, 234, 254, 45,
+                                                    ),
+                                                );
+                                                painter.rect_stroke(
+                                                    field_rect,
+                                                    1.0,
+                                                    egui::Stroke::new(
+                                                        (0.8 * self.zoom_level).clamp(0.5, 2.0),
+                                                        Color32::from_rgba_unmultiplied(
+                                                            96, 165, 250, 160,
+                                                        ),
+                                                    ),
+                                                );
+                                            }
 
-                                            // Draw field value
+                                            // Draw field value with font scaled to field height
                                             let display_val = match &field.field_type {
                                                 FormFieldType::CheckBox { checked } => {
                                                     if *checked {
@@ -1026,18 +1027,20 @@ impl KestrelApp {
                                                 _ => field.value.clone(),
                                             };
 
-                                            painter.text(
-                                                egui::pos2(
-                                                    field_rect.left() + 4.0,
-                                                    field_rect.center().y,
-                                                ),
-                                                egui::Align2::LEFT_CENTER,
-                                                &display_val,
-                                                egui::FontId::proportional(
-                                                    (13.0 * self.zoom_level).clamp(9.0, 24.0),
-                                                ),
-                                                Color32::from_rgb(30, 41, 59),
-                                            );
+                                            if !display_val.is_empty() {
+                                                let font_size = (f_h * 0.82).clamp(7.0, 32.0);
+                                                let pad_x = (2.0 * self.zoom_level).clamp(1.0, 4.0);
+                                                painter.text(
+                                                    egui::pos2(
+                                                        field_rect.left() + pad_x,
+                                                        field_rect.center().y,
+                                                    ),
+                                                    egui::Align2::LEFT_CENTER,
+                                                    &display_val,
+                                                    egui::FontId::proportional(font_size),
+                                                    Color32::from_rgb(15, 23, 42),
+                                                );
+                                            }
                                         }
                                     }
                                 }

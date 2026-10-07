@@ -632,6 +632,26 @@ fn test_integration_real_documents_if_present() {
             "Page 0 should contain 'Factura': got '{}'",
             p0_text
         );
+
+        // Verify image 1 placement with inverted CTM: top edge must be ~578.86, bottom ~499.49
+        let layout0 = session.get_page_layout(0).expect("Layout 0");
+        assert!(layout0.images.len() >= 2);
+        let img1 = &layout0.images[1];
+        assert!(
+            (img1.y - 499.49).abs() < 1.0,
+            "Image 1 bottom coordinate must be ~499.49, got {}",
+            img1.y
+        );
+        assert!(
+            ((img1.y + img1.height) - 578.86).abs() < 1.0,
+            "Image 1 top coordinate must be ~578.86, got {}",
+            img1.y + img1.height
+        );
+        // Verify SMask alpha is populated (contains transparent pixels)
+        assert!(
+            img1.rgba.iter().skip(3).step_by(4).any(|&a| a < 255),
+            "Image 1 must have transparent pixels from SMask"
+        );
     }
 
     let repsol_path =
@@ -640,6 +660,17 @@ fn test_integration_real_documents_if_present() {
         let session = DocumentSession::open_from_file(repsol_path).expect("Load Repsol");
         assert_eq!(session.page_count, 2, "Repsol should have 2 pages");
         assert_eq!(session.forms.len(), 38, "Repsol should have 38 form fields");
+
+        // Verify UTF-16BE form field value decoding
+        let titular_field = session
+            .forms
+            .iter()
+            .find(|f| f.name.contains("Razon Social"))
+            .expect("Titular field");
+        assert_eq!(
+            titular_field.value, "AITOR DÍAZ MEDINA",
+            "UTF-16BE form field must decode accurately"
+        );
 
         for page_idx in 0..session.page_count as usize {
             let page = &session.pages[page_idx];
@@ -981,4 +1012,205 @@ fn test_integration_synthetic_search_corpus_multi_page() {
     // Empty search query
     let empty_res = session.search_text("");
     assert!(empty_res.is_empty());
+}
+
+#[test]
+fn test_integration_inverted_ctm_image_bounding_box_and_placement() {
+    let mut doc = lopdf::Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    // Create 2x2 image
+    let img_stream = lopdf::Stream::new(
+        lopdf::dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => 2,
+            "Height" => 2,
+            "ColorSpace" => "DeviceRGB",
+            "BitsPerComponent" => 8,
+        },
+        vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255],
+    );
+    let img_id = doc.add_object(img_stream);
+
+    // Negative vertical scaling: cm [w, 0, 0, -h, x, y]
+    let content_ops = "q 56.0 0 0 -80.0 50.0 580.0 cm /Im1 Do Q";
+    let content_stream =
+        lopdf::Stream::new(lopdf::Dictionary::new(), content_ops.as_bytes().to_vec());
+    let content_id = doc.add_object(content_stream);
+
+    let page_id = doc.add_object(lopdf::dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Contents" => content_id,
+        "Resources" => lopdf::dictionary! {
+            "XObject" => lopdf::dictionary! {
+                "Im1" => img_id,
+            },
+        },
+    });
+
+    let pages_dict = lopdf::dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.set_object(pages_id, pages_dict);
+
+    let catalog_id = doc.add_object(lopdf::dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buf = Vec::new();
+    doc.save_to(&mut buf).unwrap();
+
+    let session = DocumentSession::open_from_bytes(buf, None).unwrap();
+    let layout = session.get_page_layout(0).unwrap();
+    assert_eq!(layout.images.len(), 1);
+    let img = &layout.images[0];
+    assert!((img.x - 50.0).abs() < 0.1);
+    assert!((img.width - 56.0).abs() < 0.1);
+    assert!((img.height - 80.0).abs() < 0.1);
+    assert!(
+        (img.y - 500.0).abs() < 0.1,
+        "img.y must be bottom coordinate (500.0), got {}",
+        img.y
+    );
+    assert!(
+        ((img.y + img.height) - 580.0).abs() < 0.1,
+        "Top edge must be 580.0, got {}",
+        img.y + img.height
+    );
+}
+
+#[test]
+fn test_integration_utf16be_form_field_decoding() {
+    let mut doc = lopdf::Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    // UTF-16BE for "AITOR DÍAZ MEDINA"
+    let mut utf16_bytes = vec![0xfe, 0xff];
+    for u in "AITOR DÍAZ MEDINA".encode_utf16() {
+        utf16_bytes.extend_from_slice(&u.to_be_bytes());
+    }
+
+    let field_id = doc.add_object(lopdf::dictionary! {
+        "FT" => "Tx",
+        "T" => lopdf::Object::string_literal("full_name"),
+        "V" => lopdf::Object::String(utf16_bytes, lopdf::StringFormat::Hexadecimal),
+        "Rect" => vec![100.into(), 650.into(), 300.into(), 662.into()],
+    });
+
+    let page_id = doc.add_object(lopdf::dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Annots" => vec![field_id.into()],
+    });
+
+    let pages_dict = lopdf::dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.set_object(pages_id, pages_dict);
+
+    let catalog_id = doc.add_object(lopdf::dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+        "AcroForm" => lopdf::dictionary! {
+            "Fields" => vec![field_id.into()],
+        },
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buf = Vec::new();
+    doc.save_to(&mut buf).unwrap();
+
+    let session = DocumentSession::open_from_bytes(buf, None).unwrap();
+    assert_eq!(session.forms.len(), 1);
+    let field = &session.forms[0];
+    assert_eq!(field.value, "AITOR DÍAZ MEDINA");
+}
+
+#[test]
+fn test_integration_image_smask_transparency() {
+    let mut doc = lopdf::Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    // 2x2 Soft Mask (alpha values: 0, 128, 192, 255)
+    let smask_stream = lopdf::Stream::new(
+        lopdf::dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => 2,
+            "Height" => 2,
+            "ColorSpace" => "DeviceGray",
+            "BitsPerComponent" => 8,
+        },
+        vec![0, 128, 192, 255],
+    );
+    let smask_id = doc.add_object(smask_stream);
+
+    // 2x2 Image referencing SMask
+    let img_stream = lopdf::Stream::new(
+        lopdf::dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => 2,
+            "Height" => 2,
+            "ColorSpace" => "DeviceRGB",
+            "BitsPerComponent" => 8,
+            "SMask" => smask_id,
+        },
+        vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255],
+    );
+    let img_id = doc.add_object(img_stream);
+
+    let content_ops = "q 100 0 0 100 50 50 cm /Im1 Do Q";
+    let content_stream =
+        lopdf::Stream::new(lopdf::Dictionary::new(), content_ops.as_bytes().to_vec());
+    let content_id = doc.add_object(content_stream);
+
+    let page_id = doc.add_object(lopdf::dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Contents" => content_id,
+        "Resources" => lopdf::dictionary! {
+            "XObject" => lopdf::dictionary! {
+                "Im1" => img_id,
+            },
+        },
+    });
+
+    let pages_dict = lopdf::dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.set_object(pages_id, pages_dict);
+
+    let catalog_id = doc.add_object(lopdf::dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buf = Vec::new();
+    doc.save_to(&mut buf).unwrap();
+
+    let session = DocumentSession::open_from_bytes(buf, None).unwrap();
+    let layout = session.get_page_layout(0).unwrap();
+    assert_eq!(layout.images.len(), 1);
+    let img = &layout.images[0];
+    assert_eq!(img.rgba.len(), 16);
+    // Check alpha bytes match SMask [0, 128, 192, 255]
+    assert_eq!(img.rgba[3], 0);
+    assert_eq!(img.rgba[7], 128);
+    assert_eq!(img.rgba[11], 192);
+    assert_eq!(img.rgba[15], 255);
 }
