@@ -22,6 +22,7 @@ pub enum SidebarTab {
     Thumbnails,
     Outlines,
     Forms,
+    Layers,
     SearchResults,
 }
 
@@ -140,6 +141,15 @@ impl KestrelApp {
                 .map(|p| p.rotation_degrees)
                 .unwrap_or(0);
             self.status_toast = Some(format!("Page {} rotated to {}°", self.current_page, rot));
+        }
+    }
+
+    /// Toggles the visibility of a document layer by index.
+    pub fn toggle_layer(&mut self, index: usize) -> bool {
+        if let Some(session) = &mut self.session {
+            session.toggle_layer(index)
+        } else {
+            false
         }
     }
 
@@ -430,6 +440,7 @@ impl KestrelApp {
                             "Outlines",
                         );
                         ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Forms, "Forms");
+                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Layers, "Layers");
                         ui.selectable_value(
                             &mut self.sidebar_tab,
                             SidebarTab::SearchResults,
@@ -556,6 +567,23 @@ impl KestrelApp {
                                     }
                                 } else {
                                     ui.label("Open a document to edit form fields.");
+                                }
+                            });
+                        }
+                        SidebarTab::Layers => {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                if let Some(session) = &mut self.session {
+                                    if session.layers.is_empty() {
+                                        ui.label("No Optional Content Groups (Layers) detected.");
+                                    } else {
+                                        ui.heading("Document Layers");
+                                        ui.add_space(4.0);
+                                        for layer in &mut session.layers {
+                                            ui.checkbox(&mut layer.visible, &layer.name);
+                                        }
+                                    }
+                                } else {
+                                    ui.label("Open a document to view layers.");
                                 }
                             });
                         }

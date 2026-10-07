@@ -12,7 +12,8 @@ Under **Spec-Driven Development (SDD)**, every feature, epic, or major fix must 
 | :--- | :--- | :--- | :--- | :--- |
 | **[0001](0001-mvp-roadmap.md)** | [MVP Development Roadmap](0001-mvp-roadmap.md) | v0.1.0 – v0.5.0 | **Active** | 5-phase delivery roadmap from high-performance reader to WASM optimization. |
 | **[0002](0002-spec-driven-development-framework.md)** | [Spec-Driven Development (SDD) & TDD Framework](0002-spec-driven-development-framework.md) | v0.2.5+ | **Active** | Operational standard for defining goals, contracts, acceptance criteria, and TDD execution. |
-| **[0003](0003-image-placement-and-form-layout-fidelity.md)** | [Image Placement, Alpha SMask & AcroForm Layout Fidelity](0003-image-placement-and-form-layout-fidelity.md) | v0.2.6 | **In Progress** | Fix inverted CTM image placement, SMask alpha, form field bounds, and text occlusion. |
+| **[0003](0003-image-placement-and-form-layout-fidelity.md)** | [Image Placement, Alpha SMask & AcroForm Layout Fidelity](0003-image-placement-and-form-layout-fidelity.md) | v0.2.6 | **Completed** | Fix inverted CTM image placement, SMask alpha, form field bounds, and text occlusion. |
+| **[0004](0004-synthetic-stress-matrix-and-layer-fidelity.md)** | [In-Memory Synthetic PDF Stress Matrix, Concurrency & Layer Engine](0004-synthetic-stress-matrix-and-layer-fidelity.md) | v0.2.8 | **Active** | Exhaustive 8-tier in-memory PDF stress matrix, parallel execution, OCG layers, and zero disk writes. |
 
 ---
 

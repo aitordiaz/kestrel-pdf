@@ -3,8 +3,9 @@ use kestrel_core::forms::FormFieldType;
 use kestrel_core::redact::{RedactionEngine, RedactionRect, RedactionTarget};
 use kestrel_core::render::{PageTileKey, RenderPipeline, TileBuffer, TileCache};
 use kestrel_core::synthetic::{
-    generate_synthetic_forms_pdf, generate_synthetic_search_corpus_pdf,
-    generate_synthetic_visual_showcase_pdf, SyntheticPdfBuilder,
+    generate_all_synthetic_stress_tiers, generate_synthetic_forms_pdf,
+    generate_synthetic_search_corpus_pdf, generate_synthetic_visual_showcase_pdf,
+    SyntheticPdfBuilder,
 };
 use lopdf::{dictionary, Document, Object, Stream};
 use std::sync::Arc;
@@ -1123,4 +1124,94 @@ fn test_integration_image_smask_transparency() {
     assert_eq!(img.rgba[7], 128);
     assert_eq!(img.rgba[11], 192);
     assert_eq!(img.rgba[15], 255);
+}
+
+#[test]
+fn test_integration_exhaustive_in_memory_synthetic_stress_matrix() {
+    let tiers = generate_all_synthetic_stress_tiers();
+    assert_eq!(tiers.len(), 8);
+
+    // 1. Tier 1 Minimal
+    let s1 = DocumentSession::open_from_bytes(tiers[0].1.clone(), None).unwrap();
+    assert_eq!(s1.page_count, 1);
+    let p1_text = s1.get_page_text(0).unwrap();
+    assert!(p1_text.contains("MINIMAL STANDALONE"));
+
+    // 2. Tier 2 Unicode & Typography Stress
+    let s2 = DocumentSession::open_from_bytes(tiers[1].1.clone(), None).unwrap();
+    assert_eq!(s2.page_count, 1);
+    let l2 = s2.get_page_layout(0).unwrap();
+    assert!(!l2.text_runs.is_empty());
+    let res = s2.search_text("UNIVERSAL");
+    assert_eq!(res.len(), 1);
+
+    // 3. Tier 3 Vector Geometry
+    let s3 = DocumentSession::open_from_bytes(tiers[2].1.clone(), None).unwrap();
+    let l3 = s3.get_page_layout(0).unwrap();
+    assert!(l3.rects.len() >= 4);
+
+    // 4. Tier 4 Raster Images
+    let s4 = DocumentSession::open_from_bytes(tiers[3].1.clone(), None).unwrap();
+    let l4 = s4.get_page_layout(0).unwrap();
+    assert_eq!(l4.images.len(), 3);
+    assert_eq!(l4.images[0].pixel_width, 16);
+    assert_eq!(l4.images[0].pixel_height, 16);
+
+    // 5. Tier 5 AcroForms
+    let mut s5 = DocumentSession::open_from_bytes(tiers[4].1.clone(), None).unwrap();
+    assert_eq!(s5.forms.len(), 5);
+    assert!(s5.forms.iter().any(|f| f.value == "Standard Alpha 2026"));
+    assert!(s5.forms.iter().any(|f| f.value == "ELENA VÁZQUEZ PEÑA"));
+    assert!(s5.update_form_field("ascii_field_0", "Updated Alpha"));
+    let saved_bytes = s5.save_to_bytes().unwrap();
+    let s5_reloaded = DocumentSession::open_from_bytes(saved_bytes, None).unwrap();
+    assert_eq!(s5_reloaded.forms.len(), 5);
+
+    // 6. Tier 6 Layers (OCG)
+    let mut s6 = DocumentSession::open_from_bytes(tiers[5].1.clone(), None).unwrap();
+    assert_eq!(s6.layers.len(), 3);
+    assert_eq!(s6.layers[0].name, "Architectural Floor Plan");
+    assert!(s6.layers[0].visible);
+    assert_eq!(s6.layers[1].name, "Electrical & Plumbing Infrastructure");
+    assert!(!s6.layers[1].visible);
+    assert_eq!(s6.layers[2].name, "Confidential Watermark & Annotations");
+    assert!(s6.layers[2].visible);
+    assert!(s6.toggle_layer(1));
+    assert!(s6.layers[1].visible);
+
+    // 7. Tier 7 Mixed Dimensions & Orientations
+    let s7 = DocumentSession::open_from_bytes(tiers[6].1.clone(), None).unwrap();
+    assert_eq!(s7.page_count, 4);
+    assert_eq!(s7.pages[0].rotation_degrees, 0);
+    assert_eq!(s7.pages[1].rotation_degrees, 90);
+    assert_eq!(s7.pages[2].rotation_degrees, 180);
+    assert_eq!(s7.pages[3].rotation_degrees, 270);
+    assert_eq!(s7.pages[0].width_pt as u32, 120);
+    assert_eq!(s7.pages[1].width_pt as u32, 595);
+    assert_eq!(s7.pages[2].width_pt as u32, 612);
+    assert_eq!(s7.pages[3].width_pt as u32, 1400);
+
+    // 8. Tier 8 Boundary Resilience
+    let s8 = DocumentSession::open_from_bytes(tiers[7].1.clone(), None).unwrap();
+    assert_eq!(s8.page_count, 2);
+}
+
+#[test]
+fn test_integration_concurrent_parallel_document_loading_and_stress() {
+    let tiers = Arc::new(generate_all_synthetic_stress_tiers());
+
+    std::thread::scope(|s| {
+        for i in 0..8 {
+            let tiers = Arc::clone(&tiers);
+            s.spawn(move || {
+                let (name, bytes) = &tiers[i];
+                let session = DocumentSession::open_from_bytes(bytes.clone(), None)
+                    .unwrap_or_else(|e| panic!("Thread worker for {} failed: {}", name, e));
+                assert!(session.page_count >= 1);
+                for page_idx in 0..(session.page_count as usize) {
+                    let _ = session.get_page_layout(page_idx);
+                }
+            });
+        }
+    });
 }
