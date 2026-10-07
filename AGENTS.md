@@ -28,9 +28,11 @@ flowchart LR
   - **Unit Tests** (`crates/*/src/`): Pure algorithms, math transformations, Bézier splines, hash collision handling.
   - **Integration Tests** (`crates/kestrel-core/tests/`): Document sessions, AST manipulation, multi-filter decompression, AcroForms roundtrip, search, redactions.
   - **E2E Smoke Tests** (`crates/kestrel-app/tests/`): Full UI application state, simulated frame rendering, tool switching, rotation, zooming, title bar display.
-- **Synthetic Data Over External Binaries**:
-  - Never depend on unversioned or external files on disk for core testing.
-  - Use `kestrel_core::synthetic::SyntheticPdfBuilder` to generate valid, reproducible PDF 1.7 documents in memory (visual showcases, forms, search corpora).
+- **Synthetic Data Over External Binaries & Strict Prohibition on Local PDFs**:
+  - **NEVER Commit Local PDF Files**: Under no circumstances should binary PDF files (`*.pdf`, `*.PDF`), user documents, real invoices, forms, or customer files ever be committed to git or tracked in this repository.
+  - **NEVER Reference Local Paths or PII**: Never hardcode or reference local filesystem paths (e.g. `/home/.../*.pdf`, `../.../*.pdf`), real document filenames, company names, or personally identifiable information (PII) in tests, benchmarks, plans, or handoffs.
+  - **In-Memory Generation Only**: All testing, regression verification, and CI matrix runs must strictly use `kestrel_core::synthetic::SyntheticPdfBuilder` to construct reproducible, clean PDF 1.7 documents directly in RAM.
+  - **Strict Git Exclusion**: The `.gitignore` permanently excludes all `*.pdf` and `*.PDF` files.
 
 ### Pillar 3: "Fail Fast, Fix Fast" (MVP Release Loop)
 - Keep feedback loops tight. Do not overcomplicate the development cycle with long-lived integration branches or complex Git-flow during the MVP phase.
@@ -194,6 +196,10 @@ When interacting with GitHub via the terminal (`run_command`):
   - No platform-specific hardcoded paths (use `std::path::PathBuf`).
   - Ensure compatibility with `wasm32-unknown-unknown` by conditionally guarding desktop-only crates or features (`cfg(target_arch = "wasm32")`).
   - Maintain support for Windows MSVC (avoid non-portable C/C++ dependencies).
+- **Data Privacy & Synthetic Testing Invariant**:
+  - Strictly 0 binary PDF files committed to the repository.
+  - Zero external disk dependencies (`/home/...`, `../...`) in test suites. All documents must be synthesized in RAM.
+  - Zero PII, customer data, or proprietary document names in code or documentation.
 - **Communication Standards**:
   - Always link referenced code files, structs, and tests using clickable GitHub-style links (`file:///...`).
   - Write concise, objective status updates and documentation in English.

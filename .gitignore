@@ -28,3 +28,9 @@ vendor/
 *.log
 /scratch/
 /tmp/
+
+# Document & Data Files (Never commit local PDF or user documents)
+*.pdf
+*.PDF
+*.pdf:Zone.Identifier
+*.PDF:Zone.Identifier

@@ -7,7 +7,7 @@
 
 ## 1. Objective & Scope
 
-Resolve real-world PDF layout defects reported when inspecting invoices (`Factura.pdf`) and administrative forms (`REPSOL_CAT_Cambio de titular_ACT_CAT_03.pdf`):
+Resolve real-world PDF layout defects reported when inspecting complex invoices and administrative forms:
 1. **Embedded Image Positioning**: When PDF content streams use negative vertical scaling in the Current Transformation Matrix (`cm [w, 0, 0, -h, x, y]`), images are vertically offset by $2 \times h$, detaching category icons and illustrations from their text counterparts.
 2. **Image Decompression & Transparency**: JPEG DCT streams and transparent Flate images with Soft Masks (`/SMask`) must decode properly rather than treating compressed bytes as raw RGB or ignoring transparency channels.
 3. **AcroForm Layout & Sizing Overlap**: Form widgets currently enforce an arbitrary minimum size (`.max(20.0)` height and `.max(24.0)` width) and an opaque 78% alpha blue background, causing form fields to expand over adjacent text lines and obscure labels, underlines, and form prompts.
@@ -55,7 +55,7 @@ let max_y = p0.1.max(p1.1).max(p2.1).max(p3.1) - media_y0;
 
 - **Test 1**: Verify inverted CTM image placement (`cm [w, 0, 0, -h, x, y]`) extracts exact expected bounding box with `y + height` matching the top coordinate.
 - **Test 2**: Verify image SMask alpha extraction produces transparent alpha channels.
-- **Test 3**: Verify UTF-16BE form field string decodes to accented Spanish characters (`AITOR DÍAZ MEDINA`).
+- **Test 3**: Verify UTF-16BE form field string decodes to accented Spanish characters (`ELENA VÁZQUEZ PEÑA`).
 - **Test 4**: E2E UI test ensuring form fields with compact height ($\le 12\text{ pt}$) do not expand to 20 pt and retain transparent/translucent backgrounds preserving underlying text visibility.
 
 ---

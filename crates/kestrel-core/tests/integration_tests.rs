@@ -607,96 +607,6 @@ fn test_integration_multi_filter_ascii85_flate_decompression() {
 }
 
 #[test]
-fn test_integration_real_documents_if_present() {
-    let factura_path = std::path::Path::new("/home/aitor/projects/Factura.pdf");
-    if factura_path.exists() {
-        let session = DocumentSession::open_from_file(factura_path).expect("Load Factura");
-        assert_eq!(session.page_count, 4, "Factura should have 4 pages");
-        for page_idx in 0..session.page_count as usize {
-            let text = session.get_page_text(page_idx).unwrap_or("");
-            assert!(
-                !text.is_empty(),
-                "Page {} in Factura must NOT be blank! Got empty string",
-                page_idx
-            );
-            let layout = session.get_page_layout(page_idx).expect("Layout");
-            assert!(
-                !layout.text_runs.is_empty(),
-                "Page {} must have positioned text runs",
-                page_idx
-            );
-        }
-        let p0_text = session.get_page_text(0).unwrap();
-        assert!(
-            p0_text.contains("Factura"),
-            "Page 0 should contain 'Factura': got '{}'",
-            p0_text
-        );
-
-        // Verify image 1 placement with inverted CTM: top edge must be ~578.86, bottom ~499.49
-        let layout0 = session.get_page_layout(0).expect("Layout 0");
-        assert!(layout0.images.len() >= 2);
-        let img1 = &layout0.images[1];
-        assert!(
-            (img1.y - 499.49).abs() < 1.0,
-            "Image 1 bottom coordinate must be ~499.49, got {}",
-            img1.y
-        );
-        assert!(
-            ((img1.y + img1.height) - 578.86).abs() < 1.0,
-            "Image 1 top coordinate must be ~578.86, got {}",
-            img1.y + img1.height
-        );
-        // Verify SMask alpha is populated (contains transparent pixels)
-        assert!(
-            img1.rgba.iter().skip(3).step_by(4).any(|&a| a < 255),
-            "Image 1 must have transparent pixels from SMask"
-        );
-    }
-
-    let repsol_path =
-        std::path::Path::new("/home/aitor/projects/REPSOL_CAT_Cambio de titular_ACT_CAT_03.pdf");
-    if repsol_path.exists() {
-        let session = DocumentSession::open_from_file(repsol_path).expect("Load Repsol");
-        assert_eq!(session.page_count, 2, "Repsol should have 2 pages");
-        assert_eq!(session.forms.len(), 38, "Repsol should have 38 form fields");
-
-        // Verify UTF-16BE form field value decoding
-        let titular_field = session
-            .forms
-            .iter()
-            .find(|f| f.name.contains("Razon Social"))
-            .expect("Titular field");
-        assert_eq!(
-            titular_field.value, "AITOR DÍAZ MEDINA",
-            "UTF-16BE form field must decode accurately"
-        );
-
-        for page_idx in 0..session.page_count as usize {
-            let page = &session.pages[page_idx];
-            let layout = session.get_page_layout(page_idx).expect("Layout");
-            assert!(
-                !layout.text_runs.is_empty(),
-                "Repsol page {} must have positioned text runs",
-                page_idx
-            );
-            for tr in &layout.text_runs {
-                assert!(
-                    tr.x >= -10.0 && tr.x <= page.width_pt + 50.0,
-                    "Text x coordinate out of bounds: {}",
-                    tr.x
-                );
-                assert!(
-                    tr.y >= -10.0 && tr.y <= page.height_pt + 50.0,
-                    "Text y coordinate out of bounds: {}",
-                    tr.y
-                );
-            }
-        }
-    }
-}
-
-#[test]
 fn test_integration_synthetic_visual_showcase_all_orientations() {
     let pdf_bytes = generate_synthetic_visual_showcase_pdf();
     assert!(!pdf_bytes.is_empty());
@@ -993,7 +903,7 @@ fn test_integration_synthetic_search_corpus_multi_page() {
     assert_eq!(res2.len(), 1);
     assert_eq!(res2[0].page_index, 2);
 
-    let res_es = session.search_text("FACTURACIÓN");
+    let res_es = session.search_text("CERTIFICACIÓN");
     assert_eq!(res_es.len(), 1);
     assert_eq!(res_es[0].page_index, 2);
 
@@ -1091,9 +1001,9 @@ fn test_integration_utf16be_form_field_decoding() {
     let mut doc = lopdf::Document::with_version("1.7");
     let pages_id = doc.new_object_id();
 
-    // UTF-16BE for "AITOR DÍAZ MEDINA"
+    // UTF-16BE for "ELENA VÁZQUEZ PEÑA"
     let mut utf16_bytes = vec![0xfe, 0xff];
-    for u in "AITOR DÍAZ MEDINA".encode_utf16() {
+    for u in "ELENA VÁZQUEZ PEÑA".encode_utf16() {
         utf16_bytes.extend_from_slice(&u.to_be_bytes());
     }
 
@@ -1133,7 +1043,7 @@ fn test_integration_utf16be_form_field_decoding() {
     let session = DocumentSession::open_from_bytes(buf, None).unwrap();
     assert_eq!(session.forms.len(), 1);
     let field = &session.forms[0];
-    assert_eq!(field.value, "AITOR DÍAZ MEDINA");
+    assert_eq!(field.value, "ELENA VÁZQUEZ PEÑA");
 }
 
 #[test]

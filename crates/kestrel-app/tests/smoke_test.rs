@@ -578,7 +578,7 @@ fn test_e2e_multi_page_search_navigation_and_visual_highlighting() {
         app.render_ui(ctx);
     });
     let texts2 = extract_all_text_from_shapes(&output2.shapes);
-    assert!(texts2.iter().any(|t| t.contains("FACTURACIÓN")));
+    assert!(texts2.iter().any(|t| t.contains("CERTIFICACIÓN")));
     assert!(texts2.iter().any(|t| t.contains("GAMMA_IBAN_SPANISH_ES91")));
 }
 
