@@ -157,6 +157,73 @@ pub fn truncate_filename_middle(name: &str, max_len: usize) -> String {
     format!("{}…{}", front, back)
 }
 
+/// Returns the platform-appropriate copy shortcut string representation (e.g. "⌘C" or "Ctrl+C / Ctrl+Ins").
+#[cfg(target_os = "macos")]
+pub fn standard_copy_shortcut_str() -> &'static str {
+    "⌘C"
+}
+
+/// Returns the platform-appropriate copy shortcut string representation (e.g. "⌘C" or "Ctrl+C / Ctrl+Ins").
+#[cfg(not(target_os = "macos"))]
+pub fn standard_copy_shortcut_str() -> &'static str {
+    "Ctrl+C / Ctrl+Ins"
+}
+
+/// Returns the platform-appropriate select-all shortcut string representation (e.g. "⌘A" or "Ctrl+A").
+#[cfg(target_os = "macos")]
+pub fn standard_select_all_shortcut_str() -> &'static str {
+    "⌘A"
+}
+
+/// Returns the platform-appropriate select-all shortcut string representation (e.g. "⌘A" or "Ctrl+A").
+#[cfg(not(target_os = "macos"))]
+pub fn standard_select_all_shortcut_str() -> &'static str {
+    "Ctrl+A"
+}
+
+/// Determines whether standard copy shortcuts were triggered on the active platform.
+/// Supports Cmd+C (macOS), Ctrl+C (Windows/Linux/WASM), Ctrl+Insert (IBM CUA),
+/// dedicated hardware Key::Copy, and OS/Browser Event::Copy.
+pub fn is_copy_shortcut_pressed(input: &egui::InputState) -> bool {
+    // 1. Native OS / browser copy event
+    if input.events.iter().any(|e| matches!(e, egui::Event::Copy)) {
+        return true;
+    }
+
+    // 2. Dedicated hardware multimedia copy key
+    if input.key_pressed(egui::Key::Copy) {
+        return true;
+    }
+
+    // Alt modifier disqualifies standard copy
+    if input.modifiers.alt {
+        return false;
+    }
+
+    // 3. Cmd+C (macOS) or Ctrl+C (Windows / Linux / WASM)
+    let is_cmd_or_ctrl = input.modifiers.command || input.modifiers.ctrl || input.modifiers.mac_cmd;
+    if is_cmd_or_ctrl && !input.modifiers.shift && input.key_pressed(egui::Key::C) {
+        return true;
+    }
+
+    // 4. IBM CUA Standard: Ctrl+Insert (Windows / Linux)
+    if input.modifiers.ctrl && !input.modifiers.shift && input.key_pressed(egui::Key::Insert) {
+        return true;
+    }
+
+    false
+}
+
+/// Determines whether standard select-all shortcuts were triggered on the active platform (Ctrl+A or Cmd+A).
+pub fn is_select_all_shortcut_pressed(input: &egui::InputState) -> bool {
+    if input.modifiers.alt || input.modifiers.shift {
+        return false;
+    }
+
+    let is_cmd_or_ctrl = input.modifiers.command || input.modifiers.ctrl || input.modifiers.mac_cmd;
+    is_cmd_or_ctrl && input.key_pressed(egui::Key::A)
+}
+
 impl KestrelApp {
     /// Returns the truncated title text for compact UI display.
     pub fn compact_title_text(&self) -> String {
@@ -420,6 +487,43 @@ impl KestrelApp {
         self.selection.clear();
     }
 
+    /// Selects all text runs on the currently active page.
+    pub fn select_all_current_page(&mut self) {
+        if self.total_pages == 0 {
+            return;
+        }
+        let page_idx = self
+            .selection
+            .page_index
+            .unwrap_or_else(|| self.current_page.saturating_sub(1));
+
+        if let Some(session) = &self.session {
+            if let Some(layout) = session.get_page_layout(page_idx) {
+                if layout.text_runs.is_empty() {
+                    return;
+                }
+                self.selection.clear();
+                self.selection.page_index = Some(page_idx);
+                self.selection.selected_text_indices = (0..layout.text_runs.len()).collect();
+
+                let all_text = if !layout.plain_text.trim().is_empty() {
+                    layout.plain_text.clone()
+                } else {
+                    layout
+                        .text_runs
+                        .iter()
+                        .map(|tr| tr.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                };
+
+                if !all_text.is_empty() {
+                    self.selection.selected_text = Some(all_text);
+                }
+            }
+        }
+    }
+
     /// Renders the entire application UI layout given an egui Context.
     pub fn render_ui(&mut self, ctx: &Context) {
         // Update OS window title bar only when changed to avoid infinite repaint loops
@@ -432,16 +536,22 @@ impl KestrelApp {
         // Poll for newly rasterized background tiles
         self.pipeline.process_incoming_tiles();
 
-        // Handle global keyboard shortcuts for selection and copying
-        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::C)) {
-            if self.selection.has_text() {
-                self.copy_selected_text(ctx);
-            } else if self.selection.has_image() {
-                self.copy_selected_image(ctx);
+        // Handle global keyboard shortcuts when text input fields (search bar, text forms) do NOT have focus
+        let text_edit_focused = ctx.wants_keyboard_input();
+        if !text_edit_focused {
+            if ctx.input(is_copy_shortcut_pressed) {
+                if self.selection.has_text() {
+                    self.copy_selected_text(ctx);
+                } else if self.selection.has_image() {
+                    self.copy_selected_image(ctx);
+                }
+            } else if self.active_tool == ActiveTool::SelectText
+                && ctx.input(is_select_all_shortcut_pressed)
+            {
+                self.select_all_current_page();
+            } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.clear_selection();
             }
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.clear_selection();
         }
 
         // 1. Tier 1: Application Header Bar (Branding, Sidebar Toggle, Document Title, File Operations)
@@ -555,7 +665,11 @@ impl KestrelApp {
                 ui.selectable_value(&mut self.active_tool, ActiveTool::Pan, "✋ Pan")
                     .on_hover_text("Pan & scroll through document");
                 ui.selectable_value(&mut self.active_tool, ActiveTool::SelectText, "📝 Select")
-                    .on_hover_text("Select and copy text");
+                    .on_hover_text(format!(
+                        "Select and copy text ({}) or select all ({})",
+                        standard_copy_shortcut_str(),
+                        standard_select_all_shortcut_str()
+                    ));
 
                 let form_count = self.session.as_ref().map(|s| s.forms.len()).unwrap_or(0);
                 let form_label = if form_count > 0 {
@@ -606,7 +720,10 @@ impl KestrelApp {
                             .unwrap_or(0);
                         if ui
                             .button(format!("📋 Copy Text ({} chars)", count))
-                            .on_hover_text("Copy selected text to clipboard (Ctrl+C / Cmd+C)")
+                            .on_hover_text(format!(
+                                "Copy selected text to clipboard ({})",
+                                standard_copy_shortcut_str()
+                            ))
                             .clicked()
                         {
                             self.copy_selected_text(ctx);
@@ -615,7 +732,10 @@ impl KestrelApp {
                     if self.selection.has_image()
                         && ui
                             .button("📋 Copy Image")
-                            .on_hover_text("Copy selected image to clipboard (Ctrl+C / Cmd+C)")
+                            .on_hover_text(format!(
+                                "Copy selected image to clipboard ({})",
+                                standard_copy_shortcut_str()
+                            ))
                             .clicked()
                     {
                         self.copy_selected_image(ctx);
@@ -1120,18 +1240,28 @@ impl KestrelApp {
                                     // Context menu for rapid clipboard copy
                                     response.context_menu(|ui| {
                                         if self.selection.has_text()
-                                            && ui.button("📋 Copy Text").clicked()
+                                            && ui
+                                                .button(format!(
+                                                    "📋 Copy Text ({})",
+                                                    standard_copy_shortcut_str()
+                                                ))
+                                                .clicked()
                                         {
                                             self.copy_selected_text(ctx);
                                             ui.close_menu();
                                         }
                                         if self.selection.has_image()
-                                            && ui.button("📋 Copy Image").clicked()
+                                            && ui
+                                                .button(format!(
+                                                    "📋 Copy Image ({})",
+                                                    standard_copy_shortcut_str()
+                                                ))
+                                                .clicked()
                                         {
                                             self.copy_selected_image(ctx);
                                             ui.close_menu();
                                         }
-                                        if ui.button("❌ Clear Selection").clicked() {
+                                        if ui.button("❌ Clear Selection (Esc)").clicked() {
                                             self.clear_selection();
                                             ui.close_menu();
                                         }

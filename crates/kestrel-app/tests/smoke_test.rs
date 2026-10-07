@@ -1,5 +1,9 @@
 use egui::{Color32, Context};
-use kestrel_app::app::{truncate_filename_middle, ActiveTool, FitMode, KestrelApp, SidebarTab};
+use kestrel_app::app::{
+    is_copy_shortcut_pressed, is_select_all_shortcut_pressed, standard_copy_shortcut_str,
+    standard_select_all_shortcut_str, truncate_filename_middle, ActiveTool, FitMode, KestrelApp,
+    SidebarTab,
+};
 use kestrel_core::synthetic::{
     generate_all_synthetic_stress_tiers, generate_synthetic_forms_pdf,
     generate_synthetic_search_corpus_pdf, generate_synthetic_visual_showcase_pdf,
@@ -1099,5 +1103,316 @@ fn test_e2e_select_and_copy_image_lifecycle() {
     assert!(
         rendered.iter().any(|t| t.contains("Copy Image")),
         "Toolbar must display Copy Image button when image is selected"
+    );
+}
+
+#[test]
+fn test_e2e_platform_copy_shortcuts_helpers() {
+    let ctx = Context::default();
+
+    // 1. macOS Cmd+C
+    let raw = egui::RawInput {
+        modifiers: egui::Modifiers {
+            mac_cmd: true,
+            ..Default::default()
+        },
+        events: vec![egui::Event::Key {
+            key: egui::Key::C,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                mac_cmd: true,
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    };
+    let _ = ctx.run(raw, |_| {});
+    let triggered = ctx.input(is_copy_shortcut_pressed);
+    assert!(triggered, "Cmd+C on macOS must trigger copy");
+
+    // 2. Windows / Linux Ctrl+C
+    let raw = egui::RawInput {
+        modifiers: egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+        events: vec![egui::Event::Key {
+            key: egui::Key::C,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    };
+    let _ = ctx.run(raw, |_| {});
+    let triggered = ctx.input(is_copy_shortcut_pressed);
+    assert!(triggered, "Ctrl+C on Windows/Linux must trigger copy");
+
+    // 3. IBM CUA Standard Ctrl+Insert
+    let raw = egui::RawInput {
+        modifiers: egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+        events: vec![egui::Event::Key {
+            key: egui::Key::Insert,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    };
+    let _ = ctx.run(raw, |_| {});
+    let triggered = ctx.input(is_copy_shortcut_pressed);
+    assert!(triggered, "Ctrl+Insert must trigger copy");
+
+    // 4. Hardware Key::Copy
+    let raw = egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::Copy,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }],
+        ..Default::default()
+    };
+    let _ = ctx.run(raw, |_| {});
+    let triggered = ctx.input(is_copy_shortcut_pressed);
+    assert!(triggered, "Dedicated hardware Key::Copy must trigger copy");
+
+    // 5. Native OS / Browser Event::Copy
+    let raw = egui::RawInput {
+        events: vec![egui::Event::Copy],
+        ..Default::default()
+    };
+    let _ = ctx.run(raw, |_| {});
+    let triggered = ctx.input(is_copy_shortcut_pressed);
+    assert!(triggered, "Event::Copy must trigger copy");
+
+    // 6. Regular 'C' key without modifier must NOT trigger copy
+    let raw = egui::RawInput {
+        events: vec![egui::Event::Key {
+            key: egui::Key::C,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }],
+        ..Default::default()
+    };
+    let _ = ctx.run(raw, |_| {});
+    let triggered = ctx.input(is_copy_shortcut_pressed);
+    assert!(!triggered, "Regular 'C' without modifier must not copy");
+
+    // 7. Alt+Ctrl+C should NOT trigger standard copy
+    let raw = egui::RawInput {
+        modifiers: egui::Modifiers {
+            ctrl: true,
+            alt: true,
+            ..Default::default()
+        },
+        events: vec![egui::Event::Key {
+            key: egui::Key::C,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                alt: true,
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    };
+    let _ = ctx.run(raw, |_| {});
+    let triggered = ctx.input(is_copy_shortcut_pressed);
+    assert!(!triggered, "Alt+Ctrl+C must not trigger standard copy");
+}
+
+#[test]
+fn test_e2e_select_all_shortcut() {
+    let ctx = Context::default();
+
+    // 1. Check helper with Ctrl+A
+    let raw = egui::RawInput {
+        modifiers: egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+        events: vec![egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    };
+    let _ = ctx.run(raw, |_| {});
+    let triggered = ctx.input(is_select_all_shortcut_pressed);
+    assert!(triggered, "Ctrl+A must trigger select-all");
+
+    // 2. Check helper with Cmd+A
+    let raw = egui::RawInput {
+        modifiers: egui::Modifiers {
+            mac_cmd: true,
+            ..Default::default()
+        },
+        events: vec![egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                mac_cmd: true,
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    };
+    let _ = ctx.run(raw, |_| {});
+    let triggered = ctx.input(is_select_all_shortcut_pressed);
+    assert!(triggered, "Cmd+A must trigger select-all");
+
+    // 3. Test select_all_current_page on a multi-line document
+    let mut builder = kestrel_core::synthetic::SyntheticPdfBuilder::new();
+    let p_idx = builder.add_page(595.28, 841.89, 0);
+    builder.add_text(p_idx, "Header Section 2026", 50.0, 780.0, 14.0, [0, 0, 0]);
+    builder.add_text(
+        p_idx,
+        "Body paragraph content",
+        50.0,
+        750.0,
+        11.0,
+        [0, 0, 0],
+    );
+    builder.add_text(p_idx, "Footer note page 1", 50.0, 50.0, 9.0, [0, 0, 0]);
+
+    let bytes = builder.build().expect("Build synthetic PDF");
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(bytes, Some("multiline.pdf".to_string()));
+    app.active_tool = ActiveTool::SelectText;
+
+    assert!(app.selection.is_empty());
+    app.select_all_current_page();
+
+    assert!(app.selection.has_text());
+    assert_eq!(app.selection.page_index, Some(0));
+    assert_eq!(app.selection.selected_text_indices.len(), 3);
+    let selected = app.selection.selected_text.as_ref().unwrap();
+    assert!(selected.contains("Header Section 2026"));
+    assert!(selected.contains("Body paragraph content"));
+    assert!(selected.contains("Footer note page 1"));
+}
+
+#[test]
+fn test_e2e_platform_tooltip_strings() {
+    let copy_str = standard_copy_shortcut_str();
+    let select_all_str = standard_select_all_shortcut_str();
+
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(copy_str, "⌘C");
+        assert_eq!(select_all_str, "⌘A");
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert!(copy_str.contains("Ctrl+C"));
+        assert!(copy_str.contains("Ctrl+Ins"));
+        assert_eq!(select_all_str, "Ctrl+A");
+    }
+}
+
+#[test]
+fn test_e2e_keyboard_focus_guard() {
+    let mut builder = kestrel_core::synthetic::SyntheticPdfBuilder::new();
+    let p_idx = builder.add_page(595.28, 841.89, 0);
+    builder.add_text(p_idx, "Protected Text Sample", 50.0, 750.0, 12.0, [0, 0, 0]);
+
+    let bytes = builder.build().expect("Build synthetic PDF");
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(bytes, Some("focus_test.pdf".to_string()));
+    app.active_tool = ActiveTool::SelectText;
+
+    let ctx = Context::default();
+
+    // Set selection
+    app.selection.page_index = Some(0);
+    app.selection.selected_text_indices = vec![0];
+    app.selection.selected_text = Some("Protected Text Sample".to_string());
+
+    // When text input is not focused and Ctrl+C is pressed, copy triggers
+    let raw = egui::RawInput {
+        modifiers: egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+        events: vec![egui::Event::Key {
+            key: egui::Key::C,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    };
+    let _ = ctx.run(raw, |ctx| {
+        app.render_ui(ctx);
+    });
+
+    assert!(app.status_toast.is_some());
+    assert!(app.status_toast.as_ref().unwrap().contains("Copied"));
+
+    // Now simulate keyboard focus on a text edit widget
+    app.status_toast = None;
+    let text_edit_id = egui::Id::new("mock_focused_input");
+    ctx.memory_mut(|mem| mem.request_focus(text_edit_id));
+    assert!(
+        ctx.wants_keyboard_input(),
+        "Context must report keyboard input wanted when focus is requested"
+    );
+
+    let raw_while_focused = egui::RawInput {
+        modifiers: egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+        events: vec![egui::Event::Key {
+            key: egui::Key::C,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        }],
+        ..Default::default()
+    };
+    let _ = ctx.run(raw_while_focused, |ctx| {
+        app.render_ui(ctx);
+    });
+
+    assert!(
+        app.status_toast.is_none(),
+        "Copying document text must NOT trigger when keyboard input is focused by an active input widget"
     );
 }
