@@ -37,7 +37,7 @@ flowchart LR
 2. **Forms Showcase** (`generate_synthetic_forms_pdf`):
    - Interactive AcroForm with text input (`/Tx`), checkbox (`/Btn`), and dropdown choice (`/Ch`).
 3. **Search Corpus** (`generate_synthetic_search_corpus_pdf`):
-   - 3-page document with unique keywords, multi-page occurrences, and UTF-8 accented characters (`FACTURACIÓN`).
+   - 3-page document with unique keywords, multi-page occurrences, and UTF-8 accented characters (`CERTIFICACIÓN`).
 
 ---
 

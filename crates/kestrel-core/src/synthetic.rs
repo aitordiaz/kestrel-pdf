@@ -805,11 +805,11 @@ pub fn generate_synthetic_search_corpus_pdf() -> Vec<u8> {
         [30, 41, 59],
     );
 
-    // Page 2: Spanish Billing & Internationalization
+    // Page 2: Internationalization & Accentuated Text
     let p2 = builder.add_page(595.28, 841.89, 0);
     builder.add_text(
         p2,
-        "FACTURACIÓN Y SUMINISTRO ENERGÉTICO",
+        "CERTIFICACIÓN Y SUMINISTRO ENERGÉTICO",
         50.0,
         780.0,
         16.0,
