@@ -32,6 +32,53 @@ pub enum FitMode {
     FitPage,
 }
 
+/// Represents the active selection state for text and embedded images.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SelectionState {
+    /// Active selected page index (0-based)
+    pub page_index: Option<usize>,
+    /// Drag selection start in visual PDF points
+    pub drag_start_pt: Option<egui::Pos2>,
+    /// Drag selection current in visual PDF points
+    pub drag_current_pt: Option<egui::Pos2>,
+    /// Indices of selected text runs on `page_index`
+    pub selected_text_indices: Vec<usize>,
+    /// Extracted text string for the current selection
+    pub selected_text: Option<String>,
+    /// Index of selected image on `page_index`
+    pub selected_image_index: Option<usize>,
+}
+
+impl SelectionState {
+    /// Resets all selection properties to empty.
+    pub fn clear(&mut self) {
+        self.page_index = None;
+        self.drag_start_pt = None;
+        self.drag_current_pt = None;
+        self.selected_text_indices.clear();
+        self.selected_text = None;
+        self.selected_image_index = None;
+    }
+
+    /// Returns true if neither text nor image is selected.
+    pub fn is_empty(&self) -> bool {
+        self.selected_text_indices.is_empty() && self.selected_image_index.is_none()
+    }
+
+    /// Returns true if non-empty text is selected.
+    pub fn has_text(&self) -> bool {
+        self.selected_text
+            .as_ref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Returns true if an embedded image is selected.
+    pub fn has_image(&self) -> bool {
+        self.selected_image_index.is_some()
+    }
+}
+
 pub struct KestrelApp {
     pub session: Option<DocumentSession>,
     pub current_file_name: Option<String>,
@@ -47,6 +94,7 @@ pub struct KestrelApp {
     pub pipeline: Arc<RenderPipeline>,
     pub textures: HashMap<PageTileKey, TextureHandle>,
     pub image_textures: HashMap<(usize, usize), TextureHandle>,
+    pub selection: SelectionState,
 
     // Phase 2: AcroForms & Contract Signing
     pub signature_modal_open: bool,
@@ -78,6 +126,7 @@ impl Default for KestrelApp {
             pipeline: Arc::new(RenderPipeline::new(128)),
             textures: HashMap::new(),
             image_textures: HashMap::new(),
+            selection: SelectionState::default(),
 
             // Signature & Form defaults
             signature_modal_open: false,
@@ -126,6 +175,7 @@ impl KestrelApp {
             self.image_textures.clear();
             self.search_results.clear();
             self.adopted_signature = None;
+            self.selection.clear();
             self.status_toast = Some("Document loaded successfully.".to_string());
             self.session = Some(session);
         }
@@ -301,6 +351,75 @@ impl KestrelApp {
         }
     }
 
+    /// Copies active text selection to system clipboard.
+    pub fn copy_selected_text(&mut self, ctx: &Context) -> bool {
+        if let Some(text) = &self.selection.selected_text {
+            let count = text.chars().count();
+            ctx.copy_text(text.clone());
+
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(text.clone());
+                }
+            }
+
+            self.status_toast = Some(format!("Copied {} characters to clipboard", count));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Copies active image selection to system clipboard.
+    pub fn copy_selected_image(&mut self, ctx: &Context) -> bool {
+        if let (Some(page_idx), Some(img_idx)) = (
+            self.selection.page_index,
+            self.selection.selected_image_index,
+        ) {
+            if let Some(session) = &self.session {
+                if let Some(layout) = session.get_page_layout(page_idx) {
+                    if let Some(img) = layout.images.get(img_idx) {
+                        let w = img.pixel_width;
+                        let h = img.pixel_height;
+
+                        #[cfg(not(target_arch = "wasm32"))]
+                        {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_image(arboard::ImageData {
+                                    width: w as usize,
+                                    height: h as usize,
+                                    bytes: std::borrow::Cow::Borrowed(&img.rgba),
+                                });
+                            }
+                        }
+
+                        if let Ok(png_bytes) = layout.encode_image_png(img_idx) {
+                            ctx.copy_text(format!(
+                                "[Embedded Image: {}×{} px, PNG {} bytes]",
+                                w,
+                                h,
+                                png_bytes.len()
+                            ));
+                        } else {
+                            ctx.copy_text(format!("[Embedded Image: {}×{} px]", w, h));
+                        }
+
+                        self.status_toast =
+                            Some(format!("Copied image ({}×{} px) to clipboard", w, h));
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Clears any active text or image selection.
+    pub fn clear_selection(&mut self) {
+        self.selection.clear();
+    }
+
     /// Renders the entire application UI layout given an egui Context.
     pub fn render_ui(&mut self, ctx: &Context) {
         // Update OS window title bar only when changed to avoid infinite repaint loops
@@ -312,6 +431,18 @@ impl KestrelApp {
 
         // Poll for newly rasterized background tiles
         self.pipeline.process_incoming_tiles();
+
+        // Handle global keyboard shortcuts for selection and copying
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::C)) {
+            if self.selection.has_text() {
+                self.copy_selected_text(ctx);
+            } else if self.selection.has_image() {
+                self.copy_selected_image(ctx);
+            }
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.clear_selection();
+        }
 
         // 1. Tier 1: Application Header Bar (Branding, Sidebar Toggle, Document Title, File Operations)
         egui::TopBottomPanel::top("app_header").show(ctx, |ui| {
@@ -462,6 +593,41 @@ impl KestrelApp {
 
                 ui.selectable_value(&mut self.active_tool, ActiveTool::RedactData, "🛡️ Redact")
                     .on_hover_text("Permanently redact sensitive document data");
+
+                // Dynamic Selection Actions
+                if !self.selection.is_empty() {
+                    ui.separator();
+                    if self.selection.has_text() {
+                        let count = self
+                            .selection
+                            .selected_text
+                            .as_ref()
+                            .map(|s| s.chars().count())
+                            .unwrap_or(0);
+                        if ui
+                            .button(format!("📋 Copy Text ({} chars)", count))
+                            .on_hover_text("Copy selected text to clipboard (Ctrl+C / Cmd+C)")
+                            .clicked()
+                        {
+                            self.copy_selected_text(ctx);
+                        }
+                    }
+                    if self.selection.has_image()
+                        && ui
+                            .button("📋 Copy Image")
+                            .on_hover_text("Copy selected image to clipboard (Ctrl+C / Cmd+C)")
+                            .clicked()
+                    {
+                        self.copy_selected_image(ctx);
+                    }
+                    if ui
+                        .button("❌ Clear")
+                        .on_hover_text("Clear active selection (Escape)")
+                        .clicked()
+                    {
+                        self.clear_selection();
+                    }
+                }
 
                 // Group 3 & 4: Zoom Controls & Live Search (Right aligned)
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -817,6 +983,7 @@ impl KestrelApp {
                                 ui.add_space(16.0);
                                 let sense = if self.active_tool == ActiveTool::SignContract
                                     || self.active_tool == ActiveTool::FormFill
+                                    || self.active_tool == ActiveTool::SelectText
                                 {
                                     egui::Sense::click_and_drag()
                                 } else {
@@ -825,6 +992,151 @@ impl KestrelApp {
                                 let (response, painter) =
                                     ui.allocate_painter(Vec2::new(base_width, base_height), sense);
                                 let rect = response.rect;
+
+                                // Handle selection operations in SelectText mode
+                                if self.active_tool == ActiveTool::SelectText {
+                                    if response.drag_started() {
+                                        if let Some(pos) = response.interact_pointer_pos() {
+                                            let vx = (pos.x - rect.left()) / self.zoom_level;
+                                            let vy = (pos.y - rect.top()) / self.zoom_level;
+                                            self.selection.clear();
+                                            self.selection.page_index = Some(page_idx);
+                                            self.selection.drag_start_pt = Some(egui::pos2(vx, vy));
+                                            self.selection.drag_current_pt =
+                                                Some(egui::pos2(vx, vy));
+
+                                            if let Some(session) = &self.session {
+                                                if let Some(layout) =
+                                                    session.get_page_layout(page_idx)
+                                                {
+                                                    if let Some((img_idx, _)) =
+                                                        layout.find_image_at_point(vx, vy, page_rot)
+                                                    {
+                                                        self.selection.selected_image_index =
+                                                            Some(img_idx);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if response.dragged()
+                                        && self.selection.page_index == Some(page_idx)
+                                    {
+                                        if let Some(pos) = response.interact_pointer_pos() {
+                                            let vx = (pos.x - rect.left()) / self.zoom_level;
+                                            let vy = (pos.y - rect.top()) / self.zoom_level;
+                                            self.selection.drag_current_pt =
+                                                Some(egui::pos2(vx, vy));
+
+                                            if let Some(start) = self.selection.drag_start_pt {
+                                                let q_rect = [start.x, start.y, vx, vy];
+                                                if let Some(session) = &self.session {
+                                                    if let Some(layout) =
+                                                        session.get_page_layout(page_idx)
+                                                    {
+                                                        let matched_runs = layout
+                                                            .find_text_runs_in_rect(
+                                                                q_rect, page_rot,
+                                                            );
+                                                        self.selection.selected_text_indices =
+                                                            matched_runs
+                                                                .iter()
+                                                                .map(|(idx, _)| *idx)
+                                                                .collect();
+                                                        let text = layout
+                                                            .get_text_in_rect(q_rect, page_rot);
+                                                        self.selection.selected_text =
+                                                            if !text.is_empty() {
+                                                                Some(text)
+                                                            } else {
+                                                                None
+                                                            };
+
+                                                        if self
+                                                            .selection
+                                                            .selected_text_indices
+                                                            .is_empty()
+                                                        {
+                                                            let matched_imgs = layout
+                                                                .find_images_in_rect(
+                                                                    q_rect, page_rot,
+                                                                );
+                                                            self.selection.selected_image_index =
+                                                                matched_imgs
+                                                                    .first()
+                                                                    .map(|(idx, _)| *idx);
+                                                        } else {
+                                                            self.selection.selected_image_index =
+                                                                None;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if response.clicked() {
+                                        if let Some(pos) = response.interact_pointer_pos() {
+                                            let vx = (pos.x - rect.left()) / self.zoom_level;
+                                            let vy = (pos.y - rect.top()) / self.zoom_level;
+                                            self.selection.clear();
+                                            self.selection.page_index = Some(page_idx);
+
+                                            if let Some(session) = &self.session {
+                                                if let Some(layout) =
+                                                    session.get_page_layout(page_idx)
+                                                {
+                                                    if let Some((img_idx, _)) =
+                                                        layout.find_image_at_point(vx, vy, page_rot)
+                                                    {
+                                                        self.selection.selected_image_index =
+                                                            Some(img_idx);
+                                                    } else {
+                                                        let text_hits = layout
+                                                            .find_text_runs_in_rect(
+                                                                [
+                                                                    vx - 6.0,
+                                                                    vy - 6.0,
+                                                                    vx + 6.0,
+                                                                    vy + 6.0,
+                                                                ],
+                                                                page_rot,
+                                                            );
+                                                        if let Some((tr_idx, tr)) =
+                                                            text_hits.first()
+                                                        {
+                                                            self.selection.selected_text_indices =
+                                                                vec![*tr_idx];
+                                                            self.selection.selected_text =
+                                                                Some(tr.text.clone());
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Context menu for rapid clipboard copy
+                                    response.context_menu(|ui| {
+                                        if self.selection.has_text()
+                                            && ui.button("📋 Copy Text").clicked()
+                                        {
+                                            self.copy_selected_text(ctx);
+                                            ui.close_menu();
+                                        }
+                                        if self.selection.has_image()
+                                            && ui.button("📋 Copy Image").clicked()
+                                        {
+                                            self.copy_selected_image(ctx);
+                                            ui.close_menu();
+                                        }
+                                        if ui.button("❌ Clear Selection").clicked() {
+                                            self.clear_selection();
+                                            ui.close_menu();
+                                        }
+                                    });
+                                }
 
                                 // Handle placing signature when clicking in SignContract mode
                                 if self.active_tool == ActiveTool::SignContract
@@ -1250,6 +1562,153 @@ impl KestrelApp {
                                                         Color32::from_rgb(22, 101, 52),
                                                     );
                                                 }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 6. Selection Highlights & Visual Overlays
+                                if self.selection.page_index == Some(page_idx) {
+                                    if let Some(session) = &self.session {
+                                        if let Some(layout) = session.get_page_layout(page_idx) {
+                                            // Text Selection Highlights
+                                            for &tr_idx in &self.selection.selected_text_indices {
+                                                if let Some(tr) = layout.text_runs.get(tr_idx) {
+                                                    let b =
+                                                        layout.text_run_visual_bounds(tr, page_rot);
+                                                    let tr_rect = egui::Rect::from_min_max(
+                                                        rect.left_top()
+                                                            + egui::vec2(b[0], b[1])
+                                                                * self.zoom_level,
+                                                        rect.left_top()
+                                                            + egui::vec2(b[2], b[3])
+                                                                * self.zoom_level,
+                                                    );
+                                                    painter.rect_filled(
+                                                        tr_rect.expand(1.5),
+                                                        2.0,
+                                                        Color32::from_rgba_unmultiplied(
+                                                            59, 130, 246, 85,
+                                                        ),
+                                                    );
+                                                    painter.rect_stroke(
+                                                        tr_rect.expand(1.5),
+                                                        2.0,
+                                                        egui::Stroke::new(
+                                                            1.0_f32,
+                                                            Color32::from_rgba_unmultiplied(
+                                                                37, 99, 235, 180,
+                                                            ),
+                                                        ),
+                                                    );
+                                                }
+                                            }
+
+                                            // Image Selection Outline, Corner Handles, and Badge
+                                            if let Some(img_idx) =
+                                                self.selection.selected_image_index
+                                            {
+                                                if let Some(img) = layout.images.get(img_idx) {
+                                                    let b =
+                                                        layout.image_visual_bounds(img, page_rot);
+                                                    let img_rect = egui::Rect::from_min_max(
+                                                        rect.left_top()
+                                                            + egui::vec2(b[0], b[1])
+                                                                * self.zoom_level,
+                                                        rect.left_top()
+                                                            + egui::vec2(b[2], b[3])
+                                                                * self.zoom_level,
+                                                    );
+                                                    painter.rect_stroke(
+                                                        img_rect,
+                                                        2.0,
+                                                        egui::Stroke::new(
+                                                            2.5_f32,
+                                                            Color32::from_rgb(37, 99, 235),
+                                                        ),
+                                                    );
+                                                    for corner in [
+                                                        img_rect.left_top(),
+                                                        img_rect.right_top(),
+                                                        img_rect.left_bottom(),
+                                                        img_rect.right_bottom(),
+                                                    ] {
+                                                        let handle = egui::Rect::from_center_size(
+                                                            corner,
+                                                            Vec2::splat(8.0),
+                                                        );
+                                                        painter.rect_filled(
+                                                            handle,
+                                                            1.0,
+                                                            Color32::WHITE,
+                                                        );
+                                                        painter.rect_stroke(
+                                                            handle,
+                                                            1.0,
+                                                            egui::Stroke::new(
+                                                                1.5_f32,
+                                                                Color32::from_rgb(37, 99, 235),
+                                                            ),
+                                                        );
+                                                    }
+                                                    let badge_rect = egui::Rect::from_min_size(
+                                                        egui::pos2(
+                                                            img_rect.left(),
+                                                            (img_rect.top() - 22.0).max(rect.top()),
+                                                        ),
+                                                        Vec2::new(135.0, 18.0),
+                                                    );
+                                                    painter.rect_filled(
+                                                        badge_rect,
+                                                        3.0,
+                                                        Color32::from_rgb(37, 99, 235),
+                                                    );
+                                                    painter.text(
+                                                        badge_rect.center(),
+                                                        egui::Align2::CENTER_CENTER,
+                                                        format!(
+                                                            "🖼️ Image ({}×{} px)",
+                                                            img.pixel_width, img.pixel_height
+                                                        ),
+                                                        egui::FontId::proportional(11.0),
+                                                        Color32::WHITE,
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Drag Marquee Box
+                                    if response.dragged() {
+                                        if let (Some(start), Some(curr)) = (
+                                            self.selection.drag_start_pt,
+                                            self.selection.drag_current_pt,
+                                        ) {
+                                            let p1 = rect.left_top()
+                                                + egui::vec2(start.x, start.y) * self.zoom_level;
+                                            let p2 = rect.left_top()
+                                                + egui::vec2(curr.x, curr.y) * self.zoom_level;
+                                            let marquee_rect = egui::Rect::from_two_pos(p1, p2);
+                                            if marquee_rect.width() > 3.0
+                                                || marquee_rect.height() > 3.0
+                                            {
+                                                painter.rect_filled(
+                                                    marquee_rect,
+                                                    2.0,
+                                                    Color32::from_rgba_unmultiplied(
+                                                        59, 130, 246, 35,
+                                                    ),
+                                                );
+                                                painter.rect_stroke(
+                                                    marquee_rect,
+                                                    2.0,
+                                                    egui::Stroke::new(
+                                                        1.2_f32,
+                                                        Color32::from_rgba_unmultiplied(
+                                                            37, 99, 235, 160,
+                                                        ),
+                                                    ),
+                                                );
                                             }
                                         }
                                     }

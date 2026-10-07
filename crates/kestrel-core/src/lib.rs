@@ -11,7 +11,7 @@ pub mod sign;
 pub mod synthetic;
 
 pub use document::{
-    decompress_pdf_stream, extract_page_layout, extract_page_text_robust,
+    decompress_pdf_stream, encode_rgba_to_png, extract_page_layout, extract_page_text_robust,
     get_page_content_decompressed, map_pdf_point_to_visual, DocumentSession, OutlineItem, PageInfo,
     PageVisualLayout, PositionedText, SearchResult, VectorRect, VisualImage,
 };

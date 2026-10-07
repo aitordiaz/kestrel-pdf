@@ -93,6 +93,174 @@ pub struct PageVisualLayout {
     pub plain_text: String,
 }
 
+impl PageVisualLayout {
+    /// Computes the visual bounding box [min_x, min_y, max_x, max_y] of a text run.
+    pub fn text_run_visual_bounds(&self, tr: &PositionedText, rotation: u16) -> [f32; 4] {
+        let (vx, vy) = map_pdf_point_to_visual(
+            tr.x,
+            tr.y + tr.font_size * 0.85,
+            self.width_pt,
+            self.height_pt,
+            rotation,
+        );
+        let approx_w = (tr.text.chars().count() as f32) * tr.font_size * 0.55 + 4.0;
+        let approx_h = tr.font_size;
+        [vx, vy, vx + approx_w, vy + approx_h]
+    }
+
+    /// Computes the visual bounding box [min_x, min_y, max_x, max_y] of an embedded image.
+    pub fn image_visual_bounds(&self, img: &VisualImage, rotation: u16) -> [f32; 4] {
+        let (vx, vy) = map_pdf_point_to_visual(
+            img.x,
+            img.y + img.height,
+            self.width_pt,
+            self.height_pt,
+            rotation,
+        );
+        let (iw, ih) = if rotation % 180 == 90 {
+            (img.height, img.width)
+        } else {
+            (img.width, img.height)
+        };
+        let min_x = vx.min(vx + iw);
+        let max_x = vx.max(vx + iw);
+        let min_y = vy.min(vy + ih);
+        let max_y = vy.max(vy + ih);
+        [min_x, min_y, max_x, max_y]
+    }
+
+    /// Finds all text runs whose visual bounding box intersects the given visual rectangle [min_x, min_y, max_x, max_y].
+    /// Returns elements ordered logically in reading order (top-to-bottom, left-to-right).
+    pub fn find_text_runs_in_rect(
+        &self,
+        rect: [f32; 4],
+        rotation: u16,
+    ) -> Vec<(usize, &PositionedText)> {
+        let q_min_x = rect[0].min(rect[2]);
+        let q_max_x = rect[0].max(rect[2]);
+        let q_min_y = rect[1].min(rect[3]);
+        let q_max_y = rect[1].max(rect[3]);
+
+        let mut matched = Vec::new();
+        for (idx, tr) in self.text_runs.iter().enumerate() {
+            let b = self.text_run_visual_bounds(tr, rotation);
+            let b_min_x = b[0].min(b[2]);
+            let b_max_x = b[0].max(b[2]);
+            let b_min_y = b[1].min(b[3]);
+            let b_max_y = b[1].max(b[3]);
+
+            if b_min_x <= q_max_x && b_max_x >= q_min_x && b_min_y <= q_max_y && b_max_y >= q_min_y
+            {
+                matched.push((idx, tr, b_min_x, b_min_y, tr.font_size));
+            }
+        }
+
+        // Sort in natural reading order
+        matched.sort_by(|a, b| {
+            let line_threshold = (a.4.max(b.4) * 0.6).max(4.0);
+            if (a.3 - b.3).abs() > line_threshold {
+                a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal)
+            } else {
+                a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal)
+            }
+        });
+
+        matched
+            .into_iter()
+            .map(|(idx, tr, _, _, _)| (idx, tr))
+            .collect()
+    }
+
+    /// Concatenates text from all text runs intersecting the rectangle in logical reading order.
+    pub fn get_text_in_rect(&self, rect: [f32; 4], rotation: u16) -> String {
+        let runs = self.find_text_runs_in_rect(rect, rotation);
+        if runs.is_empty() {
+            return String::new();
+        }
+
+        let mut result = String::new();
+        let mut last_y = f32::MIN;
+        let mut last_size: f32 = 12.0;
+
+        for (_, tr) in runs {
+            let b = self.text_run_visual_bounds(tr, rotation);
+            let vy = b[1];
+            let font_size = tr.font_size;
+            let line_threshold = (last_size.max(font_size) * 0.6).max(4.0);
+
+            if last_y > f32::MIN && (vy - last_y).abs() > line_threshold {
+                result.push('\n');
+            } else if !result.is_empty() && !result.ends_with(' ') && !result.ends_with('\n') {
+                result.push(' ');
+            }
+
+            result.push_str(&tr.text);
+            last_y = vy;
+            last_size = font_size;
+        }
+
+        result
+    }
+
+    /// Finds the top-most embedded image containing the visual point (visual_x, visual_y).
+    pub fn find_image_at_point(
+        &self,
+        visual_x: f32,
+        visual_y: f32,
+        rotation: u16,
+    ) -> Option<(usize, &VisualImage)> {
+        for (idx, img) in self.images.iter().enumerate().rev() {
+            let b = self.image_visual_bounds(img, rotation);
+            if visual_x >= b[0] && visual_x <= b[2] && visual_y >= b[1] && visual_y <= b[3] {
+                return Some((idx, img));
+            }
+        }
+        None
+    }
+
+    /// Finds embedded images intersecting the visual rectangle.
+    pub fn find_images_in_rect(&self, rect: [f32; 4], rotation: u16) -> Vec<(usize, &VisualImage)> {
+        let q_min_x = rect[0].min(rect[2]);
+        let q_max_x = rect[0].max(rect[2]);
+        let q_min_y = rect[1].min(rect[3]);
+        let q_max_y = rect[1].max(rect[3]);
+
+        let mut matched = Vec::new();
+        for (idx, img) in self.images.iter().enumerate() {
+            let b = self.image_visual_bounds(img, rotation);
+            if b[0] <= q_max_x && b[2] >= q_min_x && b[1] <= q_max_y && b[3] >= q_min_y {
+                matched.push((idx, img));
+            }
+        }
+        matched
+    }
+
+    /// Encodes a specific embedded image into PNG bytes.
+    pub fn encode_image_png(&self, image_index: usize) -> Result<Vec<u8>> {
+        let img = self
+            .images
+            .get(image_index)
+            .context("Image index out of bounds")?;
+        encode_rgba_to_png(&img.rgba, img.pixel_width, img.pixel_height)
+    }
+}
+
+/// Encodes an arbitrary RGBA byte buffer into PNG format.
+pub fn encode_rgba_to_png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut bytes);
+    image::write_buffer_with_format(
+        &mut cursor,
+        rgba,
+        width,
+        height,
+        image::ColorType::Rgba8,
+        image::ImageFormat::Png,
+    )
+    .context("Failed to encode RGBA buffer to PNG")?;
+    Ok(bytes)
+}
+
 /// Represents an active document session with parsed geometry, forms, and signatures.
 pub struct DocumentSession {
     pub file_path: Option<PathBuf>,

@@ -14,7 +14,8 @@ Under **Spec-Driven Development (SDD)**, every feature, epic, or major fix must 
 | **[0002](0002-spec-driven-development-framework.md)** | [Spec-Driven Development (SDD) & TDD Framework](0002-spec-driven-development-framework.md) | v0.2.5+ | **Active** | Operational standard for defining goals, contracts, acceptance criteria, and TDD execution. |
 | **[0003](0003-image-placement-and-form-layout-fidelity.md)** | [Image Placement, Alpha SMask & AcroForm Layout Fidelity](0003-image-placement-and-form-layout-fidelity.md) | v0.2.6 | **Completed** | Fix inverted CTM image placement, SMask alpha, form field bounds, and text occlusion. |
 | **[0004](0004-synthetic-stress-matrix-and-layer-fidelity.md)** | [In-Memory Synthetic PDF Stress Matrix, Concurrency & Layer Engine](0004-synthetic-stress-matrix-and-layer-fidelity.md) | v0.2.8 | **Completed** | Exhaustive 8-tier in-memory PDF stress matrix, parallel execution, OCG layers, and zero disk writes. |
-| **[0005](0005-responsive-toolbar-and-ux-redefinition.md)** | [Responsive Toolbar Architecture & PDF Reader UX Redefinition](0005-responsive-toolbar-and-ux-redefinition.md) | v0.2.9 | **Active** | Decouple metadata from actions with 2-tier toolbar, middle-truncation, segmented tools, and zero crowding. |
+| **[0005](0005-responsive-toolbar-and-ux-redefinition.md)** | [Responsive Toolbar Architecture & PDF Reader UX Redefinition](0005-responsive-toolbar-and-ux-redefinition.md) | v0.2.9 | **Completed** | Decouple metadata from actions with 2-tier toolbar, middle-truncation, segmented tools, and zero crowding. |
+| **[0006](0006-select-and-copy-text-and-images.md)** | [High-Fidelity Text and Image Selection & Clipboard Copy Engine](0006-select-and-copy-text-and-images.md) | v0.2.10 | **Active** | Interactive text marquee and click-to-select image, visual highlight bounds, system clipboard copy, and keyboard shortcuts. |
 
 ---
 
