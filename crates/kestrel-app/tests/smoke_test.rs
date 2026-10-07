@@ -1,8 +1,8 @@
 use egui::{Color32, Context};
 use kestrel_app::app::{ActiveTool, FitMode, KestrelApp, SidebarTab};
 use kestrel_core::synthetic::{
-    generate_synthetic_forms_pdf, generate_synthetic_search_corpus_pdf,
-    generate_synthetic_visual_showcase_pdf,
+    generate_all_synthetic_stress_tiers, generate_synthetic_forms_pdf,
+    generate_synthetic_search_corpus_pdf, generate_synthetic_visual_showcase_pdf,
 };
 use lopdf::{dictionary, Document, Object, Stream};
 
@@ -828,4 +828,106 @@ fn test_e2e_form_field_compact_geometry_and_non_occlusion() {
         !has_opaque_form_fill,
         "Form field must not render opaque 200-alpha background"
     );
+}
+
+#[test]
+fn test_e2e_parallel_open_and_exhaustive_memory_pdf_stress_matrix() {
+    let tiers = std::sync::Arc::new(generate_all_synthetic_stress_tiers());
+    assert_eq!(tiers.len(), 8);
+
+    // Concurrently open and simulate full UI execution for all 8 tiers in parallel threads
+    std::thread::scope(|s| {
+        for i in 0..8 {
+            let tiers = std::sync::Arc::clone(&tiers);
+            s.spawn(move || {
+                let (filename, bytes) = &tiers[i];
+                let mut app = KestrelApp::default();
+                app.load_document_bytes(bytes.clone(), Some(filename.to_string()));
+
+                assert!(app.session.is_some());
+                assert!(app.title_bar_text().contains(filename));
+                assert!(app.total_pages >= 1);
+
+                let ctx = Context::default();
+                let out = ctx.run(egui::RawInput::default(), |ctx| {
+                    app.render_ui(ctx);
+                });
+                assert!(!out.shapes.is_empty());
+
+                // Additional tier-specific checks
+                if *filename == "tier6_layers.pdf" {
+                    app.sidebar_tab = SidebarTab::Layers;
+                    let out_layers = ctx.run(egui::RawInput::default(), |ctx| {
+                        app.render_ui(ctx);
+                    });
+                    assert!(!out_layers.shapes.is_empty());
+                    assert!(app.toggle_layer(0));
+                } else if *filename == "tier5_acroforms.pdf" {
+                    app.active_tool = ActiveTool::FormFill;
+                    app.sidebar_tab = SidebarTab::Forms;
+                    let out_forms = ctx.run(egui::RawInput::default(), |ctx| {
+                        app.render_ui(ctx);
+                    });
+                    assert!(!out_forms.shapes.is_empty());
+                } else if *filename == "tier7_orientations.pdf" {
+                    app.rotate_current_page_clockwise();
+                    let out_rot = ctx.run(egui::RawInput::default(), |ctx| {
+                        app.render_ui(ctx);
+                    });
+                    assert!(!out_rot.shapes.is_empty());
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn test_e2e_sequential_rapid_document_switching_across_all_tiers() {
+    let tiers = generate_all_synthetic_stress_tiers();
+    let mut app = KestrelApp::default();
+    let ctx = Context::default();
+
+    for (filename, bytes) in &tiers {
+        // 1. Rapidly switch active document in memory
+        app.load_document_bytes(bytes.clone(), Some(filename.to_string()));
+
+        // 2. Assert document loaded and title updated
+        assert!(app.session.is_some());
+        assert!(app.title_bar_text().contains(filename));
+        assert!(app.total_pages >= 1);
+        assert_eq!(app.current_page, 1);
+
+        // 3. Render base frame
+        let out1 = ctx.run(egui::RawInput::default(), |ctx| {
+            app.render_ui(ctx);
+        });
+        assert!(!out1.shapes.is_empty());
+
+        // 4. Test zoom manipulations
+        app.zoom_in();
+        app.zoom_out();
+        app.pending_fit = Some(FitMode::FitWidth);
+        app.pending_fit = Some(FitMode::FitPage);
+
+        // 5. Test sidebar tab cycling
+        app.sidebar_tab = SidebarTab::Thumbnails;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| app.render_ui(ctx));
+
+        app.sidebar_tab = SidebarTab::Outlines;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| app.render_ui(ctx));
+
+        app.sidebar_tab = SidebarTab::Forms;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| app.render_ui(ctx));
+
+        app.sidebar_tab = SidebarTab::Layers;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| app.render_ui(ctx));
+
+        app.sidebar_tab = SidebarTab::SearchResults;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| app.render_ui(ctx));
+
+        // 6. Test tool cycling
+        app.active_tool = ActiveTool::SelectText;
+        app.active_tool = ActiveTool::FormFill;
+        app.active_tool = ActiveTool::Pan;
+    }
 }

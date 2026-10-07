@@ -54,11 +54,22 @@ pub struct SyntheticPage {
 #[derive(Default)]
 pub struct SyntheticPdfBuilder {
     pages: Vec<SyntheticPage>,
+    layers: Vec<(String, bool)>,
 }
 
 impl SyntheticPdfBuilder {
     pub fn new() -> Self {
-        Self { pages: Vec::new() }
+        Self {
+            pages: Vec::new(),
+            layers: Vec::new(),
+        }
+    }
+
+    /// Registers an Optional Content Group (OCG / Layer) with an initial visibility state.
+    pub fn add_layer(&mut self, name: impl Into<String>, initial_visible: bool) -> usize {
+        let idx = self.layers.len();
+        self.layers.push((name.into(), initial_visible));
+        idx
     }
 
     /// Adds a new page with specified dimensions and initial rotation (0, 90, 180, 270).
@@ -361,10 +372,45 @@ impl SyntheticPdfBuilder {
         doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
 
         // Catalog Root
-        let catalog_id = doc.add_object(dictionary! {
+        let mut catalog_dict = dictionary! {
             "Type" => "Catalog",
             "Pages" => pages_id,
-        });
+        };
+
+        if !self.layers.is_empty() {
+            let mut ocg_ids = Vec::new();
+            let mut off_ids = Vec::new();
+            for (name, initial_visible) in &self.layers {
+                let ocg_id = doc.add_object(dictionary! {
+                    "Type" => "OCG",
+                    "Name" => Object::string_literal(name.clone()),
+                });
+                ocg_ids.push(ocg_id);
+                if !*initial_visible {
+                    off_ids.push(ocg_id);
+                }
+            }
+
+            let d_dict = dictionary! {
+                "Order" => Object::Array(ocg_ids.iter().map(|id| Object::Reference(*id)).collect()),
+                "ON" => Object::Array(
+                    ocg_ids
+                        .iter()
+                        .filter(|id| !off_ids.contains(id))
+                        .map(|id| Object::Reference(*id))
+                        .collect(),
+                ),
+                "OFF" => Object::Array(off_ids.iter().map(|id| Object::Reference(*id)).collect()),
+            };
+
+            let oc_props_id = doc.add_object(dictionary! {
+                "OCGs" => Object::Array(ocg_ids.iter().map(|id| Object::Reference(*id)).collect()),
+                "D" => Object::Dictionary(d_dict),
+            });
+            catalog_dict.set("OCProperties", Object::Reference(oc_props_id));
+        }
+
+        let catalog_id = doc.add_object(catalog_dict);
         doc.trailer.set("Root", catalog_id);
 
         // Attach AcroForms if any exist
@@ -833,4 +879,480 @@ pub fn generate_synthetic_search_corpus_pdf() -> Vec<u8> {
     );
 
     builder.build().expect("Failed to build search corpus PDF")
+}
+
+/// Tier 1: Simplest possible valid PDF 1.7 in memory.
+pub fn generate_tier1_minimal_pdf() -> Vec<u8> {
+    let mut builder = SyntheticPdfBuilder::new();
+    let p0 = builder.add_page(595.28, 841.89, 0);
+    builder.add_text(
+        p0,
+        "MINIMAL STANDALONE PDF 1.7",
+        50.0,
+        750.0,
+        14.0,
+        [0, 0, 0],
+    );
+    builder.build().expect("Build Tier 1 PDF")
+}
+
+/// Tier 2: Universal character ranges and multi-script typography stress matrix.
+pub fn generate_tier2_unicode_multiscript_pdf() -> Vec<u8> {
+    let mut builder = SyntheticPdfBuilder::new();
+    let p0 = builder.add_page(595.28, 841.89, 0);
+    builder.add_rect(p0, 40.0, 780.0, 515.0, 40.0, Some([30, 41, 59]), None, 1.0);
+    builder.add_text(
+        p0,
+        "UNIVERSAL MULTI-SCRIPT & TYPOGRAPHY STRESS MATRIX",
+        50.0,
+        795.0,
+        14.0,
+        [255, 255, 255],
+    );
+
+    // ASCII & Delimiters
+    builder.add_text(
+        p0,
+        "ASCII Special: !@#$%^&*()_+-=[]{}|;':\",./<>? `~",
+        50.0,
+        750.0,
+        11.0,
+        [15, 23, 42],
+    );
+    // Latin Extended
+    builder.add_text(
+        p0,
+        "Latin Accents: ÁÉÍÓÚÑ áéíóúñ ç Ç å Å ø Ø æ Æ ü Ü ö Ö ä Ä ß",
+        50.0,
+        720.0,
+        11.0,
+        [15, 23, 42],
+    );
+    // Greek
+    builder.add_text(
+        p0,
+        "Greek Alphabet: ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ αβγδεπΩΣ θφψ",
+        50.0,
+        690.0,
+        11.0,
+        [15, 23, 42],
+    );
+    // Cyrillic
+    builder.add_text(
+        p0,
+        "Cyrillic Script: Привет, мир! Тестирование шрифтов",
+        50.0,
+        660.0,
+        11.0,
+        [15, 23, 42],
+    );
+    // CJK East Asian
+    builder.add_text(
+        p0,
+        "CJK East Asian: 你好世界 こんにちは世界 안녕하세요",
+        50.0,
+        630.0,
+        11.0,
+        [15, 23, 42],
+    );
+    // RTL Arabic & Hebrew
+    builder.add_text(
+        p0,
+        "RTL Scripts: مرحبا بالعالم (Arabic) שלום עולם (Hebrew)",
+        50.0,
+        600.0,
+        11.0,
+        [15, 23, 42],
+    );
+    // Math & Currencies
+    builder.add_text(
+        p0,
+        "Math & Currencies: ∑ ∫ √ ∞ ≈ ≠ ≤ ≥ ± ∂ ∇ | € $ £ ¥ ₹ ₿ ¢",
+        50.0,
+        570.0,
+        11.0,
+        [15, 23, 42],
+    );
+    // Emojis & Symbols
+    builder.add_text(
+        p0,
+        "Emojis & Symbols: 🚀 🦀 📄 🔒 ⚡ 🌟 ✨ 🎯 🏆 📦",
+        50.0,
+        540.0,
+        11.0,
+        [15, 23, 42],
+    );
+    // Escapes
+    builder.add_text(
+        p0,
+        "Escapes: Parentheses (nested (deep)) and \\backslashes\\ and tabs",
+        50.0,
+        510.0,
+        11.0,
+        [15, 23, 42],
+    );
+    // Continuous repetition
+    builder.add_text(
+        p0,
+        "Continuum: ".to_string() + &"ABCDEFGHIJ0123456789_".repeat(15),
+        50.0,
+        480.0,
+        9.0,
+        [71, 85, 105],
+    );
+
+    builder.build().expect("Build Tier 2 PDF")
+}
+
+/// Tier 3: Vector geometry, stroke widths, and affine transformations.
+pub fn generate_tier3_vector_affine_pdf() -> Vec<u8> {
+    let mut builder = SyntheticPdfBuilder::new();
+    let p0 = builder.add_page(595.28, 841.89, 0);
+    builder.add_rect(
+        p0,
+        40.0,
+        780.0,
+        515.0,
+        40.0,
+        Some([15, 118, 110]),
+        None,
+        1.0,
+    );
+    builder.add_text(
+        p0,
+        "VECTOR GEOMETRY, STROKES & AFFINE TRANSFORMS",
+        50.0,
+        795.0,
+        14.0,
+        [255, 255, 255],
+    );
+
+    // Stroke width variations from hairline 0.25 to heavy 8.0
+    builder.add_rect(
+        p0,
+        50.0,
+        720.0,
+        120.0,
+        40.0,
+        None,
+        Some([239, 68, 68]),
+        0.25,
+    );
+    builder.add_rect(
+        p0,
+        190.0,
+        720.0,
+        120.0,
+        40.0,
+        None,
+        Some([245, 158, 11]),
+        1.5,
+    );
+    builder.add_rect(
+        p0,
+        330.0,
+        720.0,
+        120.0,
+        40.0,
+        None,
+        Some([16, 185, 129]),
+        4.0,
+    );
+    builder.add_rect(
+        p0,
+        470.0,
+        720.0,
+        80.0,
+        40.0,
+        None,
+        Some([59, 130, 246]),
+        8.0,
+    );
+
+    // Nested filled & stroked rectangles
+    builder.add_rect(
+        p0,
+        50.0,
+        550.0,
+        200.0,
+        140.0,
+        Some([241, 245, 249]),
+        Some([100, 116, 139]),
+        2.0,
+    );
+    builder.add_rect(
+        p0,
+        70.0,
+        570.0,
+        160.0,
+        100.0,
+        Some([224, 231, 255]),
+        Some([99, 102, 241]),
+        1.5,
+    );
+    builder.add_rect(
+        p0,
+        90.0,
+        590.0,
+        120.0,
+        60.0,
+        Some([199, 210, 254]),
+        Some([79, 70, 229]),
+        1.0,
+    );
+
+    builder.build().expect("Build Tier 3 PDF")
+}
+
+/// Tier 4: Raster images, varied dimensions, and SMask transparency.
+pub fn generate_tier4_raster_smask_pdf() -> Vec<u8> {
+    let mut builder = SyntheticPdfBuilder::new();
+    let p0 = builder.add_page(595.28, 841.89, 0);
+    builder.add_rect(p0, 40.0, 780.0, 515.0, 40.0, Some([136, 19, 55]), None, 1.0);
+    builder.add_text(
+        p0,
+        "RASTER IMAGES, FORMATS & SMASK TRANSPARENCY",
+        50.0,
+        795.0,
+        14.0,
+        [255, 255, 255],
+    );
+
+    // 16x16 RGB checkerboard raster image
+    let mut rgb = Vec::with_capacity(16 * 16 * 3);
+    for y in 0..16 {
+        for x in 0..16 {
+            if (x + y) % 2 == 0 {
+                rgb.extend_from_slice(&[236, 72, 153]); // Pink
+            } else {
+                rgb.extend_from_slice(&[251, 191, 36]); // Amber
+            }
+        }
+    }
+    builder.add_image(p0, 50.0, 600.0, 120.0, 120.0, 16, 16, rgb);
+
+    // 1x1 single pixel micro image
+    builder.add_image(p0, 200.0, 650.0, 30.0, 30.0, 1, 1, vec![59, 130, 246]);
+
+    // High aspect banner image (32x2)
+    let banner = [16, 185, 129].repeat(32 * 2);
+    builder.add_image(p0, 250.0, 650.0, 280.0, 24.0, 32, 2, banner);
+
+    builder.build().expect("Build Tier 4 PDF")
+}
+
+/// Tier 5: Comprehensive interactive AcroForms with multiple field types and encodings.
+pub fn generate_tier5_acroform_stress_pdf() -> Vec<u8> {
+    let mut builder = SyntheticPdfBuilder::new();
+    let p0 = builder.add_page(595.28, 841.89, 0);
+    builder.add_rect(p0, 40.0, 780.0, 515.0, 40.0, Some([30, 58, 138]), None, 1.0);
+    builder.add_text(
+        p0,
+        "ACROFORM EXHAUSTIVE FIELD DIVERSITY",
+        50.0,
+        795.0,
+        14.0,
+        [255, 255, 255],
+    );
+
+    // ASCII text input
+    builder.add_text(p0, "ASCII Text Field:", 50.0, 730.0, 11.0, [51, 65, 85]);
+    builder.add_form_text(
+        p0,
+        "ascii_field",
+        "Standard Alpha 2026",
+        [180.0, 725.0, 450.0, 745.0],
+    );
+
+    // UTF-16BE multi-byte text field
+    builder.add_text(p0, "International Name:", 50.0, 680.0, 11.0, [51, 65, 85]);
+    builder.add_form_text(
+        p0,
+        "intl_field",
+        "ELENA VÁZQUEZ PEÑA",
+        [180.0, 675.0, 450.0, 695.0],
+    );
+
+    // Checkbox checked
+    builder.add_text(
+        p0,
+        "Terms Accepted (Checked):",
+        80.0,
+        635.0,
+        11.0,
+        [51, 65, 85],
+    );
+    builder.add_form_checkbox(p0, "terms_checked", true, [50.0, 630.0, 70.0, 650.0]);
+
+    // Checkbox unchecked
+    builder.add_text(
+        p0,
+        "Marketing Consent (Unchecked):",
+        80.0,
+        595.0,
+        11.0,
+        [51, 65, 85],
+    );
+    builder.add_form_checkbox(p0, "mkt_unchecked", false, [50.0, 590.0, 70.0, 610.0]);
+
+    // Choice / Dropdown
+    builder.add_text(p0, "Regional Hub Choice:", 50.0, 545.0, 11.0, [51, 65, 85]);
+    builder.add_form_choice(
+        p0,
+        "hub_choice",
+        vec![
+            "North America (Virginia)".to_string(),
+            "Europe (Frankfurt)".to_string(),
+            "Asia-Pacific (Tokyo)".to_string(),
+            "Latin America (São Paulo)".to_string(),
+        ],
+        Some(1),
+        [180.0, 538.0, 450.0, 558.0],
+    );
+
+    builder.build().expect("Build Tier 5 PDF")
+}
+
+/// Tier 6: Optional Content Groups (OCGs / Layers) with visibility states.
+pub fn generate_tier6_layers_ocg_pdf() -> Vec<u8> {
+    let mut builder = SyntheticPdfBuilder::new();
+    builder.add_layer("Architectural Floor Plan", true);
+    builder.add_layer("Electrical & Plumbing Infrastructure", false);
+    builder.add_layer("Confidential Watermark & Annotations", true);
+
+    let p0 = builder.add_page(595.28, 841.89, 0);
+    builder.add_rect(p0, 40.0, 780.0, 515.0, 40.0, Some([88, 28, 135]), None, 1.0);
+    builder.add_text(
+        p0,
+        "OPTIONAL CONTENT GROUPS (OCG / LAYERS)",
+        50.0,
+        795.0,
+        14.0,
+        [255, 255, 255],
+    );
+
+    builder.add_text(
+        p0,
+        "Layer 1: Structural layout and perimeter walls (Visible by default)",
+        50.0,
+        740.0,
+        11.0,
+        [30, 41, 59],
+    );
+    builder.add_text(
+        p0,
+        "Layer 2: Electrical circuitry and sensor network (Hidden by default)",
+        50.0,
+        700.0,
+        11.0,
+        [30, 41, 59],
+    );
+    builder.add_text(
+        p0,
+        "Layer 3: Security audit watermark and signatures (Visible by default)",
+        50.0,
+        660.0,
+        11.0,
+        [30, 41, 59],
+    );
+
+    builder.build().expect("Build Tier 6 PDF")
+}
+
+/// Tier 7: Multi-page mixed orientations (0°, 90°, 180°, 270°) and extreme dimension scales.
+pub fn generate_tier7_mixed_orientations_dimensions_pdf() -> Vec<u8> {
+    let mut builder = SyntheticPdfBuilder::new();
+
+    // Page 0: Postage stamp (120 x 120 pt, 0°)
+    let p0 = builder.add_page(120.0, 120.0, 0);
+    builder.add_rect(
+        p0,
+        10.0,
+        10.0,
+        100.0,
+        100.0,
+        Some([254, 243, 199]),
+        Some([217, 119, 6]),
+        1.0,
+    );
+    builder.add_text(p0, "STAMP 0°", 25.0, 55.0, 12.0, [180, 83, 9]);
+
+    // Page 1: Standard A4 (595.28 x 841.89 pt, 90° Landscape)
+    let p1 = builder.add_page(595.28, 841.89, 90);
+    builder.add_rect(p1, 50.0, 500.0, 741.0, 40.0, Some([2, 132, 199]), None, 1.0);
+    builder.add_text(
+        p1,
+        "A4 LANDSCAPE MONITOR (90 DEG)",
+        70.0,
+        515.0,
+        14.0,
+        [255, 255, 255],
+    );
+
+    // Page 2: US Letter (612.0 x 792.0 pt, 180° Inverted)
+    let p2 = builder.add_page(612.0, 792.0, 180);
+    builder.add_rect(p2, 40.0, 700.0, 532.0, 40.0, Some([225, 29, 72]), None, 1.0);
+    builder.add_text(
+        p2,
+        "LETTER INVERTED SPEC (180 DEG)",
+        60.0,
+        715.0,
+        14.0,
+        [255, 255, 255],
+    );
+
+    // Page 3: Poster / Blueprint (1400.0 x 1000.0 pt, 270° Inverted Landscape)
+    let p3 = builder.add_page(1400.0, 1000.0, 270);
+    builder.add_rect(p3, 50.0, 900.0, 900.0, 40.0, Some([79, 70, 229]), None, 1.0);
+    builder.add_text(
+        p3,
+        "OVERSIZED POSTER SCHEMATIC (270 DEG)",
+        70.0,
+        915.0,
+        14.0,
+        [255, 255, 255],
+    );
+
+    builder.build().expect("Build Tier 7 PDF")
+}
+
+/// Tier 8: Resilient boundary cases (empty pages, blank text, minimal streams).
+pub fn generate_tier8_resilient_boundary_pdf() -> Vec<u8> {
+    let mut builder = SyntheticPdfBuilder::new();
+    // Empty page
+    builder.add_page(595.28, 841.89, 0);
+    // Page with single text
+    let p1 = builder.add_page(595.28, 841.89, 0);
+    builder.add_text(
+        p1,
+        "BOUNDARY CASE RESILIENCE VERIFIED",
+        50.0,
+        750.0,
+        12.0,
+        [0, 0, 0],
+    );
+    builder.build().expect("Build Tier 8 PDF")
+}
+
+/// Generates all 8 synthetic stress tiers in memory paired with their filenames.
+pub fn generate_all_synthetic_stress_tiers() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("tier1_minimal.pdf", generate_tier1_minimal_pdf()),
+        (
+            "tier2_unicode.pdf",
+            generate_tier2_unicode_multiscript_pdf(),
+        ),
+        ("tier3_vectors.pdf", generate_tier3_vector_affine_pdf()),
+        ("tier4_raster.pdf", generate_tier4_raster_smask_pdf()),
+        ("tier5_acroforms.pdf", generate_tier5_acroform_stress_pdf()),
+        ("tier6_layers.pdf", generate_tier6_layers_ocg_pdf()),
+        (
+            "tier7_orientations.pdf",
+            generate_tier7_mixed_orientations_dimensions_pdf(),
+        ),
+        (
+            "tier8_resilience.pdf",
+            generate_tier8_resilient_boundary_pdf(),
+        ),
+    ]
 }

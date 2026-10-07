@@ -33,6 +33,13 @@ pub struct OutlineItem {
     pub children: Vec<OutlineItem>,
 }
 
+/// Optional Content Group (OCG / Layer) metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerInfo {
+    pub name: String,
+    pub visible: bool,
+}
+
 /// Search match location and context snippet.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
@@ -96,6 +103,7 @@ pub struct DocumentSession {
     pub page_layouts: Vec<PageVisualLayout>,
     pub outlines: Vec<OutlineItem>,
     pub forms: Vec<FormField>,
+    pub layers: Vec<LayerInfo>,
     pub visual_signatures: Vec<VisualSignature>,
     pub digital_signature: Option<DigitalSignatureMeta>,
 }
@@ -183,6 +191,62 @@ impl DocumentSession {
             }
         }
 
+        // Extract Optional Content Groups (OCGs / Layers)
+        let mut layers = Vec::new();
+        if let Ok(catalog) = doc.catalog() {
+            if let Ok(oc_props_obj) = catalog.get(b"OCProperties") {
+                let oc_props_dict = match oc_props_obj {
+                    Object::Reference(r) => doc.get_object(*r).and_then(Object::as_dict).ok(),
+                    Object::Dictionary(d) => Some(d),
+                    _ => None,
+                };
+                if let Some(ocp) = oc_props_dict {
+                    let mut off_ids = std::collections::HashSet::new();
+                    if let Ok(d_obj) = ocp.get(b"D") {
+                        let d_dict = match d_obj {
+                            Object::Reference(r) => {
+                                doc.get_object(*r).and_then(Object::as_dict).ok()
+                            }
+                            Object::Dictionary(d) => Some(d),
+                            _ => None,
+                        };
+                        if let Some(d) = d_dict {
+                            if let Ok(off_arr) = d.get(b"OFF").and_then(Object::as_array) {
+                                for item in off_arr {
+                                    if let Ok(ref_id) = item.as_reference() {
+                                        off_ids.insert(ref_id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Ok(ocgs_arr) = ocp.get(b"OCGs").and_then(Object::as_array) {
+                        for item in ocgs_arr {
+                            if let Ok(ref_id) = item.as_reference() {
+                                if let Ok(ocg_dict) =
+                                    doc.get_object(ref_id).and_then(Object::as_dict)
+                                {
+                                    let name = ocg_dict
+                                        .get(b"Name")
+                                        .map(|n| {
+                                            if let Ok(bytes) = n.as_str() {
+                                                String::from_utf8_lossy(bytes).to_string()
+                                            } else {
+                                                "Layer".to_string()
+                                            }
+                                        })
+                                        .unwrap_or_else(|_| "Layer".to_string());
+                                    let visible = !off_ids.contains(&ref_id);
+                                    layers.push(LayerInfo { name, visible });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Extract interactive AcroForms
         let forms = forms::extract_form_fields(&doc);
 
@@ -195,9 +259,20 @@ impl DocumentSession {
             page_layouts,
             outlines,
             forms,
+            layers,
             visual_signatures: Vec::new(),
             digital_signature: None,
         })
+    }
+
+    /// Toggles visibility of an Optional Content Group (Layer) by index.
+    pub fn toggle_layer(&mut self, index: usize) -> bool {
+        if let Some(layer) = self.layers.get_mut(index) {
+            layer.visible = !layer.visible;
+            true
+        } else {
+            false
+        }
     }
 
     /// Returns the text content for a given page index.
