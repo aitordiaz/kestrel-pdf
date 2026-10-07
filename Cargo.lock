@@ -1710,7 +1710,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel-app"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1728,7 +1728,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel-core"
-version = "0.2.12"
+version = "0.2.13"
 dependencies = [
  "anyhow",
  "crossbeam-channel",

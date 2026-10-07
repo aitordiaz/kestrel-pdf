@@ -55,7 +55,8 @@ pub struct PositionedText {
     pub x: f32, // PDF points (y=0 at bottom-left of MediaBox)
     pub y: f32, // PDF points (y=0 at bottom-left of MediaBox)
     pub font_size: f32,
-    pub color: [u8; 3], // RGB [0..255]
+    pub color: [u8; 3],    // RGB [0..255]
+    pub rotation_deg: f32, // Rotation angle in degrees (0.0 = horizontal)
 }
 
 /// Vector rectangle (shape, border, cell highlight) extracted from PDF graphics stream.
@@ -105,7 +106,20 @@ impl PageVisualLayout {
         );
         let approx_w = (tr.text.chars().count() as f32) * tr.font_size * 0.55 + 4.0;
         let approx_h = tr.font_size;
-        [vx, vy, vx + approx_w, vy + approx_h]
+        let total_rot = ((tr.rotation_deg - rotation as f32).round() as i32).rem_euclid(360);
+        if (45..=135).contains(&total_rot) || (225..=315).contains(&total_rot) {
+            let min_x = vx.min(vx + approx_h);
+            let max_x = vx.max(vx + approx_h);
+            let min_y = vy.min(vy + approx_w);
+            let max_y = vy.max(vy + approx_w);
+            [min_x, min_y, max_x, max_y]
+        } else {
+            let min_x = vx.min(vx + approx_w);
+            let max_x = vx.max(vx + approx_w);
+            let min_y = vy.min(vy + approx_h);
+            let max_y = vy.max(vy + approx_h);
+            [min_x, min_y, max_x, max_y]
+        }
     }
 
     /// Computes the visual bounding box [min_x, min_y, max_x, max_y] of an embedded image.
@@ -891,17 +905,19 @@ fn emit_text_run(
     let raw_text = decode_text_operands_string(operands, current_font, font_cmaps, font_encodings);
     let text = sanitize_extracted_text(&raw_text);
     if !text.trim().is_empty() {
-        let (wx, wy) = transform_point(&gstate.ctm, text_matrix[4], text_matrix[5]);
+        let trm = multiply_matrix(text_matrix, &gstate.ctm);
+        let wx = trm[4];
+        let wy = trm[5];
         let x = wx - media_x0;
         let y = wy - media_y0;
-        let scale_tm = (text_matrix[0].powi(2) + text_matrix[1].powi(2)).sqrt();
-        let scale_ctm = (gstate.ctm[0].powi(2) + gstate.ctm[1].powi(2)).sqrt();
-        let total_scale = (scale_tm * scale_ctm).abs();
-        let effective_size = if total_scale > 0.01 {
-            current_font_size * total_scale
+        let scale = (trm[0].powi(2) + trm[1].powi(2)).sqrt().abs();
+        let effective_size = if scale > 0.01 {
+            current_font_size * scale
         } else {
             current_font_size
         };
+        let angle_rad = trm[1].atan2(trm[0]);
+        let rotation_deg = angle_rad.to_degrees();
 
         text_runs.push(PositionedText {
             text: text.clone(),
@@ -909,6 +925,7 @@ fn emit_text_run(
             y,
             font_size: effective_size,
             color: gstate.fill_color,
+            rotation_deg,
         });
 
         // Advance x position in text matrix
@@ -970,12 +987,154 @@ pub fn map_pdf_point_to_visual(
     }
 }
 
+fn unfilter_png_predictor(
+    raw: &[u8],
+    columns: usize,
+    colors: usize,
+    bits_per_component: usize,
+    rows: usize,
+) -> Vec<u8> {
+    let bits_per_row = columns * colors * bits_per_component;
+    let bytes_per_row = bits_per_row.div_ceil(8);
+    let stride = 1 + bytes_per_row;
+    let bpp = (colors * bits_per_component).div_ceil(8).max(1);
+
+    let mut result = Vec::with_capacity(rows * bytes_per_row);
+    let mut prior_row = vec![0u8; bytes_per_row];
+
+    for r in 0..rows {
+        let row_start = r * stride;
+        if row_start >= raw.len() {
+            break;
+        }
+        let filter = raw[row_start];
+        let row_slice = if row_start + 1 + bytes_per_row <= raw.len() {
+            &raw[row_start + 1..row_start + 1 + bytes_per_row]
+        } else if row_start + 1 < raw.len() {
+            &raw[row_start + 1..]
+        } else {
+            &[]
+        };
+
+        let mut out_row = vec![0u8; bytes_per_row];
+        for c in 0..bytes_per_row {
+            let x = if c < row_slice.len() { row_slice[c] } else { 0 };
+            let a = if c >= bpp { out_row[c - bpp] } else { 0 };
+            let b = prior_row[c];
+            let c_prev = if c >= bpp { prior_row[c - bpp] } else { 0 };
+
+            let val = match filter {
+                0 => x,
+                1 => x.wrapping_add(a),
+                2 => x.wrapping_add(b),
+                3 => x.wrapping_add(((a as u16 + b as u16) / 2) as u8),
+                4 => x.wrapping_add(paeth_predictor(a, b, c_prev)),
+                _ => x,
+            };
+            out_row[c] = val;
+        }
+
+        result.extend_from_slice(&out_row);
+        prior_row = out_row;
+    }
+
+    result
+}
+
+fn paeth_predictor(a: u8, b: u8, c: u8) -> u8 {
+    let a_i = a as i16;
+    let b_i = b as i16;
+    let c_i = c as i16;
+    let p = a_i + b_i - c_i;
+    let pa = (p - a_i).abs();
+    let pb = (p - b_i).abs();
+    let pc = (p - c_i).abs();
+    if pa <= pb && pa <= pc {
+        a
+    } else if pb <= pc {
+        b
+    } else {
+        c
+    }
+}
+
+fn rotate_rgba_if_needed(
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    ctm: &[f32; 6],
+) -> (Vec<u8>, u32, u32) {
+    let a = ctm[0];
+    let b = ctm[1];
+    let c = ctm[2];
+    let d = ctm[3];
+
+    let angle_rad = b.atan2(a);
+    let deg = angle_rad.to_degrees().round() as i32;
+    let norm_deg = deg.rem_euclid(360);
+
+    if (80..=100).contains(&norm_deg)
+        || (a.abs() < 0.01 && b.abs() > 0.01 && c.abs() > 0.01 && d.abs() < 0.01 && b > 0.0)
+    {
+        // Rotate 90 degrees clockwise
+        let mut rotated = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let src_idx = ((y * width + x) * 4) as usize;
+                let dst_x = height - 1 - y;
+                let dst_y = x;
+                let dst_idx = ((dst_y * height + dst_x) * 4) as usize;
+                if src_idx + 3 < rgba.len() && dst_idx + 3 < rotated.len() {
+                    rotated[dst_idx..dst_idx + 4].copy_from_slice(&rgba[src_idx..src_idx + 4]);
+                }
+            }
+        }
+        (rotated, height, width)
+    } else if (170..=190).contains(&norm_deg) {
+        // Rotate 180 degrees
+        let mut rotated = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let src_idx = ((y * width + x) * 4) as usize;
+                let dst_x = width - 1 - x;
+                let dst_y = height - 1 - y;
+                let dst_idx = ((dst_y * width + dst_x) * 4) as usize;
+                if src_idx + 3 < rgba.len() && dst_idx + 3 < rotated.len() {
+                    rotated[dst_idx..dst_idx + 4].copy_from_slice(&rgba[src_idx..src_idx + 4]);
+                }
+            }
+        }
+        (rotated, width, height)
+    } else if (260..=280).contains(&norm_deg)
+        || (a.abs() < 0.01 && b.abs() > 0.01 && c.abs() > 0.01 && d.abs() < 0.01 && b < 0.0)
+    {
+        // Rotate 270 degrees
+        let mut rotated = vec![0u8; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let src_idx = ((y * width + x) * 4) as usize;
+                let dst_x = y;
+                let dst_y = width - 1 - x;
+                let dst_idx = ((dst_y * height + dst_x) * 4) as usize;
+                if src_idx + 3 < rgba.len() && dst_idx + 3 < rotated.len() {
+                    rotated[dst_idx..dst_idx + 4].copy_from_slice(&rgba[src_idx..src_idx + 4]);
+                }
+            }
+        }
+        (rotated, height, width)
+    } else {
+        (rgba, width, height)
+    }
+}
+
 #[allow(clippy::chunks_exact_to_as_chunks)]
 fn convert_image_bytes_to_rgba(
     raw_bytes: &[u8],
     width: u32,
     height: u32,
     colorspace: &str,
+    bits_per_component: usize,
+    decode_parms: Option<&lopdf::Dictionary>,
     smask_bytes: Option<&[u8]>,
 ) -> Vec<u8> {
     let pixel_count = (width * height) as usize;
@@ -995,24 +1154,84 @@ fn convert_image_bytes_to_rgba(
         }
     }
 
+    // 2. Unfilter PNG predictor if specified in DecodeParms
+    let predictor = decode_parms
+        .and_then(|d| d.get(b"Predictor").ok())
+        .and_then(|o| o.as_i64().ok())
+        .unwrap_or(1) as usize;
+
+    let columns = decode_parms
+        .and_then(|d| d.get(b"Columns").ok())
+        .and_then(|o| o.as_i64().ok())
+        .unwrap_or(width as i64) as usize;
+
+    let colors = decode_parms
+        .and_then(|d| d.get(b"Colors").ok())
+        .and_then(|o| o.as_i64().ok())
+        .unwrap_or_else(|| {
+            if colorspace.contains("RGB") {
+                3
+            } else if colorspace.contains("CMYK") {
+                4
+            } else {
+                1
+            }
+        }) as usize;
+
+    let bpc = decode_parms
+        .and_then(|d| d.get(b"BitsPerComponent").ok())
+        .and_then(|o| o.as_i64().ok())
+        .unwrap_or(bits_per_component as i64) as usize;
+
+    let processed_bytes = if (10..=15).contains(&predictor) {
+        unfilter_png_predictor(raw_bytes, columns, colors, bpc, height as usize)
+    } else {
+        raw_bytes.to_vec()
+    };
+
     let mut rgba = Vec::with_capacity(pixel_count * 4);
 
-    if colorspace.contains("RGB") || colorspace.is_empty() {
-        for chunk in raw_bytes.chunks_exact(3) {
+    // 3. Unpack 1-bit monochrome images
+    if bpc == 1 && (colorspace.contains("Gray") || colors == 1) {
+        let bytes_per_row = (width as usize).div_ceil(8);
+        for r in 0..height as usize {
+            let row_start = r * bytes_per_row;
+            if row_start >= processed_bytes.len() {
+                break;
+            }
+            let row_end = (row_start + bytes_per_row).min(processed_bytes.len());
+            let row_slice = &processed_bytes[row_start..row_end];
+            for c in 0..width as usize {
+                let byte_idx = c / 8;
+                let bit_idx = 7 - (c % 8);
+                let bit = if byte_idx < row_slice.len() {
+                    (row_slice[byte_idx] >> bit_idx) & 1
+                } else {
+                    0
+                };
+                let val = if bit == 1 { 255 } else { 0 };
+                rgba.push(val);
+                rgba.push(val);
+                rgba.push(val);
+                rgba.push(255);
+            }
+        }
+    } else if colorspace.contains("RGB") || colorspace.is_empty() {
+        for chunk in processed_bytes.chunks_exact(3) {
             rgba.push(chunk[0]);
             rgba.push(chunk[1]);
             rgba.push(chunk[2]);
             rgba.push(255);
         }
     } else if colorspace.contains("Gray") {
-        for &g in raw_bytes.iter().take(pixel_count) {
+        for &g in processed_bytes.iter().take(pixel_count) {
             rgba.push(g);
             rgba.push(g);
             rgba.push(g);
             rgba.push(255);
         }
     } else if colorspace.contains("CMYK") {
-        for chunk in raw_bytes.chunks_exact(4) {
+        for chunk in processed_bytes.chunks_exact(4) {
             let c = chunk[0] as f32 / 255.0;
             let m = chunk[1] as f32 / 255.0;
             let y = chunk[2] as f32 / 255.0;
@@ -1023,8 +1242,8 @@ fn convert_image_bytes_to_rgba(
             rgba.push(rgb[2]);
             rgba.push(255);
         }
-    } else if raw_bytes.len() >= pixel_count * 4 {
-        rgba.extend_from_slice(&raw_bytes[..pixel_count * 4]);
+    } else if processed_bytes.len() >= pixel_count * 4 {
+        rgba.extend_from_slice(&processed_bytes[..pixel_count * 4]);
     } else {
         for _ in 0..pixel_count {
             rgba.extend_from_slice(&[180, 180, 180, 255]);
@@ -1049,6 +1268,609 @@ fn convert_image_bytes_to_rgba(
 
 /// Extracts high-fidelity visual layout (positioned text runs and vector rects)
 /// from a PDF page's decompressed content stream.
+#[derive(Clone, Default)]
+pub struct ResourceContext {
+    pub font_cmaps: std::collections::HashMap<Vec<u8>, ToUnicodeCMap>,
+    pub font_encodings: std::collections::HashMap<Vec<u8>, String>,
+    pub xobjects: std::collections::HashMap<Vec<u8>, lopdf::ObjectId>,
+}
+
+impl ResourceContext {
+    pub fn merge(&self, child: &Self) -> Self {
+        let mut merged = self.clone();
+        for (k, v) in &child.font_cmaps {
+            merged.font_cmaps.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &child.font_encodings {
+            merged.font_encodings.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &child.xobjects {
+            merged.xobjects.insert(k.clone(), *v);
+        }
+        merged
+    }
+}
+
+fn parse_rect(rect_obj: &lopdf::Object) -> Option<[f32; 4]> {
+    let arr = rect_obj.as_array().ok()?;
+    if arr.len() < 4 {
+        return None;
+    }
+    let x1 = get_op_float(&arr[0]);
+    let y1 = get_op_float(&arr[1]);
+    let x2 = get_op_float(&arr[2]);
+    let y2 = get_op_float(&arr[3]);
+    Some([x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2)])
+}
+
+fn extract_resources(doc: &lopdf::Document, res_dict: &lopdf::Dictionary) -> ResourceContext {
+    let mut ctx = ResourceContext::default();
+
+    // 1. Fonts
+    if let Ok(font_obj) = res_dict.get(b"Font") {
+        let f_dict_opt = match font_obj {
+            lopdf::Object::Reference(r) => doc.get_object(*r).and_then(lopdf::Object::as_dict).ok(),
+            lopdf::Object::Dictionary(d) => Some(d),
+            _ => None,
+        };
+        if let Some(f_dict) = f_dict_opt {
+            for (font_name, obj) in f_dict.iter() {
+                let font_dict_opt = match obj {
+                    lopdf::Object::Reference(r) => {
+                        doc.get_object(*r).and_then(lopdf::Object::as_dict).ok()
+                    }
+                    lopdf::Object::Dictionary(d) => Some(d),
+                    _ => None,
+                };
+                if let Some(font_dict) = font_dict_opt {
+                    // Resolve /Encoding (could be an indirect reference or dictionary)
+                    let enc_obj = match font_dict.get(b"Encoding") {
+                        Ok(lopdf::Object::Reference(r)) => doc.get_object(*r).ok(),
+                        Ok(o) => Some(o),
+                        _ => None,
+                    };
+                    if let Some(o) = enc_obj {
+                        if let Ok(enc_name) = o.as_name_str() {
+                            ctx.font_encodings
+                                .insert(font_name.clone(), enc_name.to_string());
+                        } else if let Ok(ed) = o.as_dict() {
+                            if let Ok(base_enc) =
+                                ed.get(b"BaseEncoding").and_then(lopdf::Object::as_name_str)
+                            {
+                                ctx.font_encodings
+                                    .insert(font_name.clone(), base_enc.to_string());
+                            }
+                        }
+                    }
+
+                    // Resolve /ToUnicode (could be on font_dict or on DescendantFonts)
+                    let to_unicode_obj = font_dict.get(b"ToUnicode").ok().or_else(|| {
+                        if let Ok(descendants) = font_dict
+                            .get(b"DescendantFonts")
+                            .and_then(lopdf::Object::as_array)
+                        {
+                            if let Some(first_desc) = descendants.first() {
+                                let desc_dict = match first_desc {
+                                    lopdf::Object::Reference(r) => {
+                                        doc.get_object(*r).and_then(lopdf::Object::as_dict).ok()
+                                    }
+                                    lopdf::Object::Dictionary(d) => Some(d),
+                                    _ => None,
+                                };
+                                if let Some(d) = desc_dict {
+                                    return d.get(b"ToUnicode").ok();
+                                }
+                            }
+                        }
+                        None
+                    });
+
+                    if let Some(to_unicode_obj) = to_unicode_obj {
+                        let stream = match to_unicode_obj {
+                            lopdf::Object::Reference(ref_id) => doc
+                                .get_object(*ref_id)
+                                .and_then(lopdf::Object::as_stream)
+                                .ok(),
+                            lopdf::Object::Stream(s) => Some(s),
+                            _ => None,
+                        };
+
+                        if let Some(stream) = stream {
+                            let stream_bytes = decompress_pdf_stream(stream)
+                                .unwrap_or_else(|_| stream.content.clone());
+                            let cmap = parse_to_unicode_cmap(&stream_bytes);
+                            if !cmap.is_empty() {
+                                ctx.font_cmaps.insert(font_name.clone(), cmap);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. XObjects
+    if let Ok(xobj_obj) = res_dict.get(b"XObject") {
+        let x_dict_opt = match xobj_obj {
+            lopdf::Object::Reference(r) => doc.get_object(*r).and_then(lopdf::Object::as_dict).ok(),
+            lopdf::Object::Dictionary(d) => Some(d),
+            _ => None,
+        };
+        if let Some(xobjs) = x_dict_opt {
+            for (name, obj) in xobjs.iter() {
+                if let Ok(ref_id) = obj.as_reference() {
+                    ctx.xobjects.insert(name.clone(), ref_id);
+                }
+            }
+        }
+    }
+
+    ctx
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_content_operations(
+    doc: &lopdf::Document,
+    operations: &[lopdf::content::Operation],
+    resources: &ResourceContext,
+    gstate: &mut GraphicsGState,
+    gstate_stack: &mut Vec<GraphicsGState>,
+    text_runs: &mut Vec<PositionedText>,
+    rects: &mut Vec<VectorRect>,
+    images: &mut Vec<VisualImage>,
+    media_x0: f32,
+    media_y0: f32,
+    depth: usize,
+) {
+    let mut text_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut line_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut current_font = Vec::new();
+    let mut current_font_size = 12.0f32;
+    let mut current_leading = 12.0f32;
+
+    let mut pending_rects: Vec<(f32, f32, f32, f32)> = Vec::new();
+
+    for operation in operations {
+        match operation.operator.as_str() {
+            // Graphics state save / restore
+            "q" => {
+                gstate_stack.push(gstate.clone());
+            }
+            "Q" => {
+                if let Some(restored) = gstate_stack.pop() {
+                    *gstate = restored;
+                }
+            }
+            // Concatenate matrix to CTM
+            "cm" => {
+                if operation.operands.len() >= 6 {
+                    let m = [
+                        get_op_float(&operation.operands[0]),
+                        get_op_float(&operation.operands[1]),
+                        get_op_float(&operation.operands[2]),
+                        get_op_float(&operation.operands[3]),
+                        get_op_float(&operation.operands[4]),
+                        get_op_float(&operation.operands[5]),
+                    ];
+                    gstate.ctm = multiply_matrix(&m, &gstate.ctm);
+                }
+            }
+            // Colors
+            "rg" => {
+                if operation.operands.len() >= 3 {
+                    let r = get_op_float(&operation.operands[0]);
+                    let g = get_op_float(&operation.operands[1]);
+                    let b = get_op_float(&operation.operands[2]);
+                    gstate.fill_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
+                }
+            }
+            "RG" => {
+                if operation.operands.len() >= 3 {
+                    let r = get_op_float(&operation.operands[0]);
+                    let g = get_op_float(&operation.operands[1]);
+                    let b = get_op_float(&operation.operands[2]);
+                    gstate.stroke_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
+                }
+            }
+            "g" => {
+                if let Some(op0) = operation.operands.first() {
+                    let val = float_to_u8(get_op_float(op0));
+                    gstate.fill_color = [val, val, val];
+                }
+            }
+            "G" => {
+                if let Some(op0) = operation.operands.first() {
+                    let val = float_to_u8(get_op_float(op0));
+                    gstate.stroke_color = [val, val, val];
+                }
+            }
+            "k" => {
+                if operation.operands.len() >= 4 {
+                    let c = get_op_float(&operation.operands[0]);
+                    let m = get_op_float(&operation.operands[1]);
+                    let y = get_op_float(&operation.operands[2]);
+                    let k = get_op_float(&operation.operands[3]);
+                    gstate.fill_color = cmyk_to_rgb(c, m, y, k);
+                }
+            }
+            "K" => {
+                if operation.operands.len() >= 4 {
+                    let c = get_op_float(&operation.operands[0]);
+                    let m = get_op_float(&operation.operands[1]);
+                    let y = get_op_float(&operation.operands[2]);
+                    let k = get_op_float(&operation.operands[3]);
+                    gstate.stroke_color = cmyk_to_rgb(c, m, y, k);
+                }
+            }
+            "sc" | "scn" => match operation.operands.len() {
+                1 => {
+                    let val = float_to_u8(get_op_float(&operation.operands[0]));
+                    gstate.fill_color = [val, val, val];
+                }
+                3 => {
+                    let r = get_op_float(&operation.operands[0]);
+                    let g = get_op_float(&operation.operands[1]);
+                    let b = get_op_float(&operation.operands[2]);
+                    gstate.fill_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
+                }
+                4 => {
+                    let c = get_op_float(&operation.operands[0]);
+                    let m = get_op_float(&operation.operands[1]);
+                    let y = get_op_float(&operation.operands[2]);
+                    let k = get_op_float(&operation.operands[3]);
+                    gstate.fill_color = cmyk_to_rgb(c, m, y, k);
+                }
+                _ => {}
+            },
+            "SC" | "SCN" => match operation.operands.len() {
+                1 => {
+                    let val = float_to_u8(get_op_float(&operation.operands[0]));
+                    gstate.stroke_color = [val, val, val];
+                }
+                3 => {
+                    let r = get_op_float(&operation.operands[0]);
+                    let g = get_op_float(&operation.operands[1]);
+                    let b = get_op_float(&operation.operands[2]);
+                    gstate.stroke_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
+                }
+                4 => {
+                    let c = get_op_float(&operation.operands[0]);
+                    let m = get_op_float(&operation.operands[1]);
+                    let y = get_op_float(&operation.operands[2]);
+                    let k = get_op_float(&operation.operands[3]);
+                    gstate.stroke_color = cmyk_to_rgb(c, m, y, k);
+                }
+                _ => {}
+            },
+            "w" => {
+                if let Some(op0) = operation.operands.first() {
+                    gstate.line_width = get_op_float(op0).max(0.2);
+                }
+            }
+            // Text object operators
+            "BT" => {
+                text_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+                line_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+            }
+            "ET" => {}
+            "Tf" => {
+                if let Some(font_obj) = operation.operands.first() {
+                    if let Ok(f_name) = font_obj.as_name() {
+                        current_font = f_name.to_vec();
+                    }
+                }
+                if operation.operands.len() >= 2 {
+                    current_font_size = get_op_float(&operation.operands[1]).max(1.0);
+                }
+            }
+            "TL" => {
+                if let Some(op0) = operation.operands.first() {
+                    current_leading = get_op_float(op0);
+                }
+            }
+            "Tm" => {
+                if operation.operands.len() >= 6 {
+                    text_matrix = [
+                        get_op_float(&operation.operands[0]),
+                        get_op_float(&operation.operands[1]),
+                        get_op_float(&operation.operands[2]),
+                        get_op_float(&operation.operands[3]),
+                        get_op_float(&operation.operands[4]),
+                        get_op_float(&operation.operands[5]),
+                    ];
+                    line_matrix = text_matrix;
+                }
+            }
+            "Td" => {
+                if operation.operands.len() >= 2 {
+                    let tx = get_op_float(&operation.operands[0]);
+                    let ty = get_op_float(&operation.operands[1]);
+                    line_matrix = multiply_matrix(&[1.0, 0.0, 0.0, 1.0, tx, ty], &line_matrix);
+                    text_matrix = line_matrix;
+                }
+            }
+            "TD" => {
+                if operation.operands.len() >= 2 {
+                    let tx = get_op_float(&operation.operands[0]);
+                    let ty = get_op_float(&operation.operands[1]);
+                    current_leading = -ty;
+                    line_matrix = multiply_matrix(&[1.0, 0.0, 0.0, 1.0, tx, ty], &line_matrix);
+                    text_matrix = line_matrix;
+                }
+            }
+            "T*" => {
+                line_matrix =
+                    multiply_matrix(&[1.0, 0.0, 0.0, 1.0, 0.0, -current_leading], &line_matrix);
+                text_matrix = line_matrix;
+            }
+            "'" => {
+                line_matrix =
+                    multiply_matrix(&[1.0, 0.0, 0.0, 1.0, 0.0, -current_leading], &line_matrix);
+                text_matrix = line_matrix;
+                emit_text_run(
+                    text_runs,
+                    &operation.operands,
+                    &current_font,
+                    &resources.font_cmaps,
+                    &resources.font_encodings,
+                    &mut text_matrix,
+                    gstate,
+                    current_font_size,
+                    media_x0,
+                    media_y0,
+                );
+            }
+            "\"" => {
+                if operation.operands.len() >= 3 {
+                    line_matrix =
+                        multiply_matrix(&[1.0, 0.0, 0.0, 1.0, 0.0, -current_leading], &line_matrix);
+                    text_matrix = line_matrix;
+                    emit_text_run(
+                        text_runs,
+                        &operation.operands[2..],
+                        &current_font,
+                        &resources.font_cmaps,
+                        &resources.font_encodings,
+                        &mut text_matrix,
+                        gstate,
+                        current_font_size,
+                        media_x0,
+                        media_y0,
+                    );
+                }
+            }
+            "Tj" | "TJ" => {
+                emit_text_run(
+                    text_runs,
+                    &operation.operands,
+                    &current_font,
+                    &resources.font_cmaps,
+                    &resources.font_encodings,
+                    &mut text_matrix,
+                    gstate,
+                    current_font_size,
+                    media_x0,
+                    media_y0,
+                );
+            }
+            // Path construction & painting
+            "re" => {
+                if operation.operands.len() >= 4 {
+                    let rx = get_op_float(&operation.operands[0]);
+                    let ry = get_op_float(&operation.operands[1]);
+                    let rw = get_op_float(&operation.operands[2]);
+                    let rh = get_op_float(&operation.operands[3]);
+                    pending_rects.push((rx, ry, rw, rh));
+                }
+            }
+            "f" | "f*" | "F" => {
+                for &(rx, ry, rw, rh) in &pending_rects {
+                    emit_vector_rect(
+                        rects, rx, ry, rw, rh, gstate, media_x0, media_y0, true, false,
+                    );
+                }
+                pending_rects.clear();
+            }
+            "s" | "S" => {
+                for &(rx, ry, rw, rh) in &pending_rects {
+                    emit_vector_rect(
+                        rects, rx, ry, rw, rh, gstate, media_x0, media_y0, false, true,
+                    );
+                }
+                pending_rects.clear();
+            }
+            "b" | "B" | "b*" | "B*" => {
+                for &(rx, ry, rw, rh) in &pending_rects {
+                    emit_vector_rect(
+                        rects, rx, ry, rw, rh, gstate, media_x0, media_y0, true, true,
+                    );
+                }
+                pending_rects.clear();
+            }
+            "n" => {
+                pending_rects.clear();
+            }
+            "Do" => {
+                if let Some(op0) = operation.operands.first() {
+                    if let Ok(name_bytes) = op0.as_name() {
+                        if let Some(&xobj_id) = resources.xobjects.get(name_bytes) {
+                            if let Ok(xobj_stream) =
+                                doc.get_object(xobj_id).and_then(lopdf::Object::as_stream)
+                            {
+                                let subtype = xobj_stream
+                                    .dict
+                                    .get(b"Subtype")
+                                    .and_then(lopdf::Object::as_name_str)
+                                    .unwrap_or("");
+                                if subtype == "Image" {
+                                    let pw = xobj_stream
+                                        .dict
+                                        .get(b"Width")
+                                        .and_then(lopdf::Object::as_i64)
+                                        .unwrap_or(0)
+                                        as u32;
+                                    let ph = xobj_stream
+                                        .dict
+                                        .get(b"Height")
+                                        .and_then(lopdf::Object::as_i64)
+                                        .unwrap_or(0)
+                                        as u32;
+                                    if pw > 0 && ph > 0 {
+                                        let raw_bytes = decompress_pdf_stream(xobj_stream)
+                                            .unwrap_or_else(|_| xobj_stream.content.clone());
+                                        let cs = xobj_stream
+                                            .dict
+                                            .get(b"ColorSpace")
+                                            .and_then(lopdf::Object::as_name_str)
+                                            .unwrap_or("DeviceRGB");
+                                        let bpc = xobj_stream
+                                            .dict
+                                            .get(b"BitsPerComponent")
+                                            .ok()
+                                            .and_then(|o| o.as_i64().ok())
+                                            .unwrap_or(8)
+                                            as usize;
+                                        let decode_parms =
+                                            xobj_stream.dict.get(b"DecodeParms").ok().and_then(
+                                                |o| match o {
+                                                    lopdf::Object::Reference(r) => doc
+                                                        .get_object(*r)
+                                                        .and_then(lopdf::Object::as_dict)
+                                                        .ok(),
+                                                    lopdf::Object::Dictionary(d) => Some(d),
+                                                    _ => None,
+                                                },
+                                            );
+
+                                        let smask_bytes: Option<Vec<u8>> = if let Ok(smask_obj) =
+                                            xobj_stream.dict.get(b"SMask")
+                                        {
+                                            let smask_stream = match smask_obj {
+                                                lopdf::Object::Reference(r) => doc
+                                                    .get_object(*r)
+                                                    .and_then(lopdf::Object::as_stream)
+                                                    .ok(),
+                                                lopdf::Object::Stream(s) => Some(s),
+                                                _ => None,
+                                            };
+                                            smask_stream.and_then(|s| decompress_pdf_stream(s).ok())
+                                        } else {
+                                            None
+                                        };
+
+                                        let rgba = convert_image_bytes_to_rgba(
+                                            &raw_bytes,
+                                            pw,
+                                            ph,
+                                            cs,
+                                            bpc,
+                                            decode_parms,
+                                            smask_bytes.as_deref(),
+                                        );
+                                        if !rgba.is_empty() {
+                                            let (oriented_rgba, final_pw, final_ph) =
+                                                rotate_rgba_if_needed(rgba, pw, ph, &gstate.ctm);
+
+                                            let p0 = transform_point(&gstate.ctm, 0.0, 0.0);
+                                            let p1 = transform_point(&gstate.ctm, 1.0, 0.0);
+                                            let p2 = transform_point(&gstate.ctm, 1.0, 1.0);
+                                            let p3 = transform_point(&gstate.ctm, 0.0, 1.0);
+
+                                            let min_x =
+                                                p0.0.min(p1.0).min(p2.0).min(p3.0) - media_x0;
+                                            let max_x =
+                                                p0.0.max(p1.0).max(p2.0).max(p3.0) - media_x0;
+                                            let min_y =
+                                                p0.1.min(p1.1).min(p2.1).min(p3.1) - media_y0;
+                                            let max_y =
+                                                p0.1.max(p1.1).max(p2.1).max(p3.1) - media_y0;
+                                            let w = max_x - min_x;
+                                            let h = max_y - min_y;
+
+                                            images.push(VisualImage {
+                                                x: min_x,
+                                                y: min_y,
+                                                width: if w > 0.01 { w } else { final_pw as f32 },
+                                                height: if h > 0.01 { h } else { final_ph as f32 },
+                                                pixel_width: final_pw,
+                                                pixel_height: final_ph,
+                                                rgba: oriented_rgba,
+                                            });
+                                        }
+                                    }
+                                } else if subtype == "Form" && depth < 8 {
+                                    // Recursive Form XObject execution
+                                    let saved_gstate = gstate.clone();
+                                    if let Ok(mat_arr) = xobj_stream
+                                        .dict
+                                        .get(b"Matrix")
+                                        .and_then(lopdf::Object::as_array)
+                                    {
+                                        if mat_arr.len() >= 6 {
+                                            let m = [
+                                                get_op_float(&mat_arr[0]),
+                                                get_op_float(&mat_arr[1]),
+                                                get_op_float(&mat_arr[2]),
+                                                get_op_float(&mat_arr[3]),
+                                                get_op_float(&mat_arr[4]),
+                                                get_op_float(&mat_arr[5]),
+                                            ];
+                                            gstate.ctm = multiply_matrix(&m, &gstate.ctm);
+                                        }
+                                    }
+
+                                    let child_res =
+                                        if let Ok(res_obj) = xobj_stream.dict.get(b"Resources") {
+                                            let rd_opt = match res_obj {
+                                                lopdf::Object::Reference(r) => doc
+                                                    .get_object(*r)
+                                                    .and_then(lopdf::Object::as_dict)
+                                                    .ok(),
+                                                lopdf::Object::Dictionary(d) => Some(d),
+                                                _ => None,
+                                            };
+                                            if let Some(rd) = rd_opt {
+                                                resources.merge(&extract_resources(doc, rd))
+                                            } else {
+                                                resources.clone()
+                                            }
+                                        } else {
+                                            resources.clone()
+                                        };
+
+                                    let form_bytes = decompress_pdf_stream(xobj_stream)
+                                        .unwrap_or_else(|_| xobj_stream.content.clone());
+                                    if let Ok(form_content) =
+                                        lopdf::content::Content::decode(&form_bytes)
+                                    {
+                                        process_content_operations(
+                                            doc,
+                                            &form_content.operations,
+                                            &child_res,
+                                            gstate,
+                                            gstate_stack,
+                                            text_runs,
+                                            rects,
+                                            images,
+                                            media_x0,
+                                            media_y0,
+                                            depth + 1,
+                                        );
+                                    }
+                                    *gstate = saved_gstate;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Extracts high-fidelity visual layout (positioned text runs and vector rects)
+/// from a PDF page's decompressed content stream.
 pub fn extract_page_layout(
     doc: &lopdf::Document,
     page_id: lopdf::ObjectId,
@@ -1057,95 +1879,50 @@ pub fn extract_page_layout(
     media_x0: f32,
     media_y0: f32,
 ) -> PageVisualLayout {
-    // 1. Extract font ToUnicode CMaps and encodings for this page
-    let fonts = doc.get_page_fonts(page_id);
-    let mut font_cmaps: std::collections::HashMap<Vec<u8>, ToUnicodeCMap> =
-        std::collections::HashMap::new();
-    let mut font_encodings: std::collections::HashMap<Vec<u8>, String> =
-        std::collections::HashMap::new();
-
-    for (font_name, font_dict) in &fonts {
-        // Resolve /Encoding (could be an indirect reference or dictionary)
-        let enc_obj = match font_dict.get(b"Encoding") {
-            Ok(Object::Reference(r)) => doc.get_object(*r).ok(),
-            Ok(obj) => Some(obj),
+    // 1. Extract base page resources (fonts, ToUnicode CMaps, encodings, and XObjects)
+    let mut page_resources = ResourceContext::default();
+    if let Ok(page_dict) = doc.get_object(page_id).and_then(lopdf::Object::as_dict) {
+        let res_opt = match page_dict.get(b"Resources") {
+            Ok(lopdf::Object::Reference(r)) => {
+                doc.get_object(*r).and_then(lopdf::Object::as_dict).ok()
+            }
+            Ok(lopdf::Object::Dictionary(d)) => Some(d),
             _ => None,
         };
-        if let Some(obj) = enc_obj {
-            if let Ok(enc_name) = obj.as_name_str() {
-                font_encodings.insert(font_name.clone(), enc_name.to_string());
-            } else if let Ok(enc_dict) = obj.as_dict() {
-                if let Ok(base_enc) = enc_dict.get(b"BaseEncoding").and_then(Object::as_name_str) {
-                    font_encodings.insert(font_name.clone(), base_enc.to_string());
-                }
-            }
+        if let Some(res) = res_opt {
+            page_resources = extract_resources(doc, res);
         }
+    }
 
-        // Resolve /ToUnicode (could be on font_dict or on DescendantFonts)
-        let to_unicode_obj = font_dict.get(b"ToUnicode").ok().or_else(|| {
-            if let Ok(descendants) = font_dict.get(b"DescendantFonts").and_then(Object::as_array) {
-                if let Some(first_desc) = descendants.first() {
-                    let desc_dict = match first_desc {
-                        Object::Reference(r) => doc.get_object(*r).and_then(Object::as_dict).ok(),
-                        Object::Dictionary(d) => Some(d),
-                        _ => None,
-                    };
-                    if let Some(d) = desc_dict {
-                        return d.get(b"ToUnicode").ok();
-                    }
-                }
-            }
-            None
-        });
-
-        if let Some(to_unicode_obj) = to_unicode_obj {
-            let stream = match to_unicode_obj {
-                Object::Reference(ref_id) => {
-                    doc.get_object(*ref_id).and_then(Object::as_stream).ok()
-                }
-                Object::Stream(s) => Some(s),
+    // Also merge any fonts discoverable via lopdf helper
+    let page_fonts = doc.get_page_fonts(page_id);
+    for (font_name, font_dict) in &page_fonts {
+        if !page_resources.font_encodings.contains_key(font_name) {
+            let enc_obj = match font_dict.get(b"Encoding") {
+                Ok(lopdf::Object::Reference(r)) => doc.get_object(*r).ok(),
+                Ok(obj) => Some(obj),
                 _ => None,
             };
-
-            if let Some(stream) = stream {
-                let stream_bytes =
-                    decompress_pdf_stream(stream).unwrap_or_else(|_| stream.content.clone());
-                let cmap = parse_to_unicode_cmap(&stream_bytes);
-                if !cmap.is_empty() {
-                    font_cmaps.insert(font_name.clone(), cmap);
+            if let Some(obj) = enc_obj {
+                if let Ok(enc_name) = obj.as_name_str() {
+                    page_resources
+                        .font_encodings
+                        .insert(font_name.clone(), enc_name.to_string());
+                } else if let Ok(enc_dict) = obj.as_dict() {
+                    if let Ok(base_enc) = enc_dict
+                        .get(b"BaseEncoding")
+                        .and_then(lopdf::Object::as_name_str)
+                    {
+                        page_resources
+                            .font_encodings
+                            .insert(font_name.clone(), base_enc.to_string());
+                    }
                 }
             }
         }
     }
 
-    // 2. Extract XObjects dictionary from page resources
-    let page_xobjects: std::collections::HashMap<Vec<u8>, lopdf::ObjectId> = {
-        let mut map = std::collections::HashMap::new();
-        if let Ok(page_dict) = doc.get_object(page_id).and_then(Object::as_dict) {
-            let res_opt = match page_dict.get(b"Resources") {
-                Ok(Object::Reference(r)) => doc.get_object(*r).and_then(Object::as_dict).ok(),
-                Ok(Object::Dictionary(d)) => Some(d),
-                _ => None,
-            };
-            if let Some(res) = res_opt {
-                let xobj_dict_opt = match res.get(b"XObject") {
-                    Ok(Object::Reference(r)) => doc.get_object(*r).and_then(Object::as_dict).ok(),
-                    Ok(Object::Dictionary(d)) => Some(d),
-                    _ => None,
-                };
-                if let Some(xobjs) = xobj_dict_opt {
-                    for (name, obj) in xobjs.iter() {
-                        if let Ok(ref_id) = obj.as_reference() {
-                            map.insert(name.clone(), ref_id);
-                        }
-                    }
-                }
-            }
-        }
-        map
-    };
-
-    // 3. Decompress page content operations
+    // 2. Decompress page content operations
     let content_bytes = match get_page_content_decompressed(doc, page_id) {
         Ok(bytes) => bytes,
         Err(_) => doc.get_page_content(page_id).unwrap_or_default(),
@@ -1158,364 +1935,157 @@ pub fn extract_page_layout(
     if let Ok(content) = lopdf::content::Content::decode(&content_bytes) {
         let mut gstate = GraphicsGState::default();
         let mut gstate_stack = Vec::new();
+        process_content_operations(
+            doc,
+            &content.operations,
+            &page_resources,
+            &mut gstate,
+            &mut gstate_stack,
+            &mut text_runs,
+            &mut rects,
+            &mut images,
+            media_x0,
+            media_y0,
+            0,
+        );
+    }
 
-        let mut text_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-        let mut line_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-        let mut current_font = Vec::new();
-        let mut current_font_size = 12.0f32;
-        let mut current_leading = 12.0f32;
-
-        let mut pending_rects: Vec<(f32, f32, f32, f32)> = Vec::new();
-
-        for operation in &content.operations {
-            match operation.operator.as_str() {
-                // Graphics state save / restore
-                "q" => {
-                    gstate_stack.push(gstate.clone());
-                }
-                "Q" => {
-                    if let Some(restored) = gstate_stack.pop() {
-                        gstate = restored;
-                    }
-                }
-                // Concatenate matrix to CTM
-                "cm" => {
-                    if operation.operands.len() >= 6 {
-                        let m = [
-                            get_op_float(&operation.operands[0]),
-                            get_op_float(&operation.operands[1]),
-                            get_op_float(&operation.operands[2]),
-                            get_op_float(&operation.operands[3]),
-                            get_op_float(&operation.operands[4]),
-                            get_op_float(&operation.operands[5]),
-                        ];
-                        gstate.ctm = multiply_matrix(&m, &gstate.ctm);
-                    }
-                }
-                // Colors
-                "rg" => {
-                    if operation.operands.len() >= 3 {
-                        let r = get_op_float(&operation.operands[0]);
-                        let g = get_op_float(&operation.operands[1]);
-                        let b = get_op_float(&operation.operands[2]);
-                        gstate.fill_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
-                    }
-                }
-                "RG" => {
-                    if operation.operands.len() >= 3 {
-                        let r = get_op_float(&operation.operands[0]);
-                        let g = get_op_float(&operation.operands[1]);
-                        let b = get_op_float(&operation.operands[2]);
-                        gstate.stroke_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
-                    }
-                }
-                "g" => {
-                    if let Some(op0) = operation.operands.first() {
-                        let val = float_to_u8(get_op_float(op0));
-                        gstate.fill_color = [val, val, val];
-                    }
-                }
-                "G" => {
-                    if let Some(op0) = operation.operands.first() {
-                        let val = float_to_u8(get_op_float(op0));
-                        gstate.stroke_color = [val, val, val];
-                    }
-                }
-                "k" => {
-                    if operation.operands.len() >= 4 {
-                        let c = get_op_float(&operation.operands[0]);
-                        let m = get_op_float(&operation.operands[1]);
-                        let y = get_op_float(&operation.operands[2]);
-                        let k = get_op_float(&operation.operands[3]);
-                        gstate.fill_color = cmyk_to_rgb(c, m, y, k);
-                    }
-                }
-                "K" => {
-                    if operation.operands.len() >= 4 {
-                        let c = get_op_float(&operation.operands[0]);
-                        let m = get_op_float(&operation.operands[1]);
-                        let y = get_op_float(&operation.operands[2]);
-                        let k = get_op_float(&operation.operands[3]);
-                        gstate.stroke_color = cmyk_to_rgb(c, m, y, k);
-                    }
-                }
-                "sc" | "scn" => match operation.operands.len() {
-                    1 => {
-                        let val = float_to_u8(get_op_float(&operation.operands[0]));
-                        gstate.fill_color = [val, val, val];
-                    }
-                    3 => {
-                        let r = get_op_float(&operation.operands[0]);
-                        let g = get_op_float(&operation.operands[1]);
-                        let b = get_op_float(&operation.operands[2]);
-                        gstate.fill_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
-                    }
-                    4 => {
-                        let c = get_op_float(&operation.operands[0]);
-                        let m = get_op_float(&operation.operands[1]);
-                        let y = get_op_float(&operation.operands[2]);
-                        let k = get_op_float(&operation.operands[3]);
-                        gstate.fill_color = cmyk_to_rgb(c, m, y, k);
-                    }
-                    _ => {}
-                },
-                "SC" | "SCN" => match operation.operands.len() {
-                    1 => {
-                        let val = float_to_u8(get_op_float(&operation.operands[0]));
-                        gstate.stroke_color = [val, val, val];
-                    }
-                    3 => {
-                        let r = get_op_float(&operation.operands[0]);
-                        let g = get_op_float(&operation.operands[1]);
-                        let b = get_op_float(&operation.operands[2]);
-                        gstate.stroke_color = [float_to_u8(r), float_to_u8(g), float_to_u8(b)];
-                    }
-                    4 => {
-                        let c = get_op_float(&operation.operands[0]);
-                        let m = get_op_float(&operation.operands[1]);
-                        let y = get_op_float(&operation.operands[2]);
-                        let k = get_op_float(&operation.operands[3]);
-                        gstate.stroke_color = cmyk_to_rgb(c, m, y, k);
-                    }
-                    _ => {}
-                },
-                "w" => {
-                    if let Some(op0) = operation.operands.first() {
-                        gstate.line_width = get_op_float(op0).max(0.2);
-                    }
-                }
-                // Text object operators
-                "BT" => {
-                    text_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-                    line_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
-                }
-                "ET" => {}
-                "Tf" => {
-                    if let Some(font_obj) = operation.operands.first() {
-                        if let Ok(f_name) = font_obj.as_name() {
-                            current_font = f_name.to_vec();
+    // 3. Process page annotations (digital signature appearance streams, stamps, badges)
+    if let Ok(page_dict) = doc.get_object(page_id).and_then(lopdf::Object::as_dict) {
+        if let Ok(annots_obj) = page_dict.get(b"Annots") {
+            let annot_arr_opt = match annots_obj {
+                lopdf::Object::Array(arr) => Some(arr.clone()),
+                lopdf::Object::Reference(r) => doc
+                    .get_object(*r)
+                    .and_then(lopdf::Object::as_array)
+                    .ok()
+                    .cloned(),
+                _ => None,
+            };
+            if let Some(annot_arr) = annot_arr_opt {
+                for annot_ref in &annot_arr {
+                    let annot_dict_opt = match annot_ref {
+                        lopdf::Object::Reference(r) => {
+                            doc.get_object(*r).and_then(lopdf::Object::as_dict).ok()
                         }
-                    }
-                    if operation.operands.len() >= 2 {
-                        current_font_size = get_op_float(&operation.operands[1]).max(1.0);
-                    }
-                }
-                "TL" => {
-                    if let Some(op0) = operation.operands.first() {
-                        current_leading = get_op_float(op0);
-                    }
-                }
-                "Tm" => {
-                    if operation.operands.len() >= 6 {
-                        text_matrix = [
-                            get_op_float(&operation.operands[0]),
-                            get_op_float(&operation.operands[1]),
-                            get_op_float(&operation.operands[2]),
-                            get_op_float(&operation.operands[3]),
-                            get_op_float(&operation.operands[4]),
-                            get_op_float(&operation.operands[5]),
-                        ];
-                        line_matrix = text_matrix;
-                    }
-                }
-                "Td" => {
-                    if operation.operands.len() >= 2 {
-                        let tx = get_op_float(&operation.operands[0]);
-                        let ty = get_op_float(&operation.operands[1]);
-                        line_matrix = multiply_matrix(&[1.0, 0.0, 0.0, 1.0, tx, ty], &line_matrix);
-                        text_matrix = line_matrix;
-                    }
-                }
-                "TD" => {
-                    if operation.operands.len() >= 2 {
-                        let tx = get_op_float(&operation.operands[0]);
-                        let ty = get_op_float(&operation.operands[1]);
-                        current_leading = -ty;
-                        line_matrix = multiply_matrix(&[1.0, 0.0, 0.0, 1.0, tx, ty], &line_matrix);
-                        text_matrix = line_matrix;
-                    }
-                }
-                "T*" => {
-                    line_matrix =
-                        multiply_matrix(&[1.0, 0.0, 0.0, 1.0, 0.0, -current_leading], &line_matrix);
-                    text_matrix = line_matrix;
-                }
-                "'" => {
-                    line_matrix =
-                        multiply_matrix(&[1.0, 0.0, 0.0, 1.0, 0.0, -current_leading], &line_matrix);
-                    text_matrix = line_matrix;
-                    emit_text_run(
-                        &mut text_runs,
-                        &operation.operands,
-                        &current_font,
-                        &font_cmaps,
-                        &font_encodings,
-                        &mut text_matrix,
-                        &gstate,
-                        current_font_size,
-                        media_x0,
-                        media_y0,
-                    );
-                }
-                "\"" => {
-                    if operation.operands.len() >= 3 {
-                        line_matrix = multiply_matrix(
-                            &[1.0, 0.0, 0.0, 1.0, 0.0, -current_leading],
-                            &line_matrix,
-                        );
-                        text_matrix = line_matrix;
-                        emit_text_run(
-                            &mut text_runs,
-                            &operation.operands[2..],
-                            &current_font,
-                            &font_cmaps,
-                            &font_encodings,
-                            &mut text_matrix,
-                            &gstate,
-                            current_font_size,
-                            media_x0,
-                            media_y0,
-                        );
-                    }
-                }
-                "Tj" | "TJ" => {
-                    emit_text_run(
-                        &mut text_runs,
-                        &operation.operands,
-                        &current_font,
-                        &font_cmaps,
-                        &font_encodings,
-                        &mut text_matrix,
-                        &gstate,
-                        current_font_size,
-                        media_x0,
-                        media_y0,
-                    );
-                }
-                // Path construction & painting
-                "re" => {
-                    if operation.operands.len() >= 4 {
-                        let rx = get_op_float(&operation.operands[0]);
-                        let ry = get_op_float(&operation.operands[1]);
-                        let rw = get_op_float(&operation.operands[2]);
-                        let rh = get_op_float(&operation.operands[3]);
-                        pending_rects.push((rx, ry, rw, rh));
-                    }
-                }
-                "f" | "f*" | "F" => {
-                    for &(rx, ry, rw, rh) in &pending_rects {
-                        emit_vector_rect(
-                            &mut rects, rx, ry, rw, rh, &gstate, media_x0, media_y0, true, false,
-                        );
-                    }
-                    pending_rects.clear();
-                }
-                "s" | "S" => {
-                    for &(rx, ry, rw, rh) in &pending_rects {
-                        emit_vector_rect(
-                            &mut rects, rx, ry, rw, rh, &gstate, media_x0, media_y0, false, true,
-                        );
-                    }
-                    pending_rects.clear();
-                }
-                "b" | "B" | "b*" | "B*" => {
-                    for &(rx, ry, rw, rh) in &pending_rects {
-                        emit_vector_rect(
-                            &mut rects, rx, ry, rw, rh, &gstate, media_x0, media_y0, true, true,
-                        );
-                    }
-                    pending_rects.clear();
-                }
-                "n" => {
-                    pending_rects.clear();
-                }
-                "Do" => {
-                    if let Some(op0) = operation.operands.first() {
-                        if let Ok(name_bytes) = op0.as_name() {
-                            if let Some(&xobj_id) = page_xobjects.get(name_bytes) {
-                                if let Ok(xobj_stream) =
-                                    doc.get_object(xobj_id).and_then(Object::as_stream)
-                                {
-                                    let is_img = xobj_stream
-                                        .dict
-                                        .get(b"Subtype")
-                                        .and_then(Object::as_name_str)
-                                        .map(|s| s == "Image")
-                                        .unwrap_or(false);
-                                    if is_img {
-                                        let pw = xobj_stream
+                        lopdf::Object::Dictionary(d) => Some(d),
+                        _ => None,
+                    };
+                    if let Some(ad) = annot_dict_opt {
+                        if let Ok(ap_obj) = ad.get(b"AP") {
+                            let ap_dict_opt = match ap_obj {
+                                lopdf::Object::Reference(r) => {
+                                    doc.get_object(*r).and_then(lopdf::Object::as_dict).ok()
+                                }
+                                lopdf::Object::Dictionary(d) => Some(d),
+                                _ => None,
+                            };
+                            if let Some(ap_dict) = ap_dict_opt {
+                                if let Ok(n_obj) = ap_dict.get(b"N") {
+                                    let stream_opt = match n_obj {
+                                        lopdf::Object::Reference(r) => doc
+                                            .get_object(*r)
+                                            .and_then(lopdf::Object::as_stream)
+                                            .ok(),
+                                        lopdf::Object::Stream(s) => Some(s),
+                                        _ => None,
+                                    };
+                                    if let Some(ap_stream) = stream_opt {
+                                        let rect = ad
+                                            .get(b"Rect")
+                                            .ok()
+                                            .and_then(parse_rect)
+                                            .unwrap_or([0.0, 0.0, 100.0, 100.0]);
+                                        let bbox = ap_stream
                                             .dict
-                                            .get(b"Width")
-                                            .and_then(Object::as_i64)
-                                            .unwrap_or(0)
-                                            as u32;
-                                        let ph = xobj_stream
+                                            .get(b"BBox")
+                                            .ok()
+                                            .and_then(parse_rect)
+                                            .unwrap_or([
+                                                0.0,
+                                                0.0,
+                                                rect[2] - rect[0],
+                                                rect[3] - rect[1],
+                                            ]);
+
+                                        let rect_w = rect[2] - rect[0];
+                                        let rect_h = rect[3] - rect[1];
+                                        let bbox_w = bbox[2] - bbox[0];
+                                        let bbox_h = bbox[3] - bbox[1];
+
+                                        let (sx, sy, tx, ty) = if bbox_w > 0.001 && bbox_h > 0.001 {
+                                            let sx = rect_w / bbox_w;
+                                            let sy = rect_h / bbox_h;
+                                            let tx = rect[0] - bbox[0] * sx;
+                                            let ty = rect[1] - bbox[1] * sy;
+                                            (sx, sy, tx, ty)
+                                        } else {
+                                            (1.0, 1.0, rect[0], rect[1])
+                                        };
+
+                                        let mut init_matrix = [sx, 0.0, 0.0, sy, tx, ty];
+                                        if let Ok(mat_arr) = ap_stream
                                             .dict
-                                            .get(b"Height")
-                                            .and_then(Object::as_i64)
-                                            .unwrap_or(0)
-                                            as u32;
-                                        if pw > 0 && ph > 0 {
-                                            let raw_bytes = decompress_pdf_stream(xobj_stream)
-                                                .unwrap_or_else(|_| xobj_stream.content.clone());
-                                            let cs = xobj_stream
-                                                .dict
-                                                .get(b"ColorSpace")
-                                                .and_then(Object::as_name_str)
-                                                .unwrap_or("DeviceRGB");
-
-                                            let smask_bytes: Option<Vec<u8>> =
-                                                if let Ok(smask_obj) =
-                                                    xobj_stream.dict.get(b"SMask")
-                                                {
-                                                    let smask_stream = match smask_obj {
-                                                        Object::Reference(r) => doc
-                                                            .get_object(*r)
-                                                            .and_then(Object::as_stream)
-                                                            .ok(),
-                                                        Object::Stream(s) => Some(s),
-                                                        _ => None,
-                                                    };
-                                                    smask_stream
-                                                        .and_then(|s| decompress_pdf_stream(s).ok())
-                                                } else {
-                                                    None
-                                                };
-
-                                            let rgba = convert_image_bytes_to_rgba(
-                                                &raw_bytes,
-                                                pw,
-                                                ph,
-                                                cs,
-                                                smask_bytes.as_deref(),
-                                            );
-                                            if !rgba.is_empty() {
-                                                let p0 = transform_point(&gstate.ctm, 0.0, 0.0);
-                                                let p1 = transform_point(&gstate.ctm, 1.0, 0.0);
-                                                let p2 = transform_point(&gstate.ctm, 1.0, 1.0);
-                                                let p3 = transform_point(&gstate.ctm, 0.0, 1.0);
-
-                                                let min_x =
-                                                    p0.0.min(p1.0).min(p2.0).min(p3.0) - media_x0;
-                                                let max_x =
-                                                    p0.0.max(p1.0).max(p2.0).max(p3.0) - media_x0;
-                                                let min_y =
-                                                    p0.1.min(p1.1).min(p2.1).min(p3.1) - media_y0;
-                                                let max_y =
-                                                    p0.1.max(p1.1).max(p2.1).max(p3.1) - media_y0;
-                                                let w = max_x - min_x;
-                                                let h = max_y - min_y;
-
-                                                images.push(VisualImage {
-                                                    x: min_x,
-                                                    y: min_y,
-                                                    width: if w > 0.01 { w } else { pw as f32 },
-                                                    height: if h > 0.01 { h } else { ph as f32 },
-                                                    pixel_width: pw,
-                                                    pixel_height: ph,
-                                                    rgba,
-                                                });
+                                            .get(b"Matrix")
+                                            .and_then(lopdf::Object::as_array)
+                                        {
+                                            if mat_arr.len() >= 6 {
+                                                let m = [
+                                                    get_op_float(&mat_arr[0]),
+                                                    get_op_float(&mat_arr[1]),
+                                                    get_op_float(&mat_arr[2]),
+                                                    get_op_float(&mat_arr[3]),
+                                                    get_op_float(&mat_arr[4]),
+                                                    get_op_float(&mat_arr[5]),
+                                                ];
+                                                init_matrix = multiply_matrix(&m, &init_matrix);
                                             }
+                                        }
+
+                                        let ap_res =
+                                            if let Ok(res_obj) = ap_stream.dict.get(b"Resources") {
+                                                let rd_opt = match res_obj {
+                                                    lopdf::Object::Reference(r) => doc
+                                                        .get_object(*r)
+                                                        .and_then(lopdf::Object::as_dict)
+                                                        .ok(),
+                                                    lopdf::Object::Dictionary(d) => Some(d),
+                                                    _ => None,
+                                                };
+                                                if let Some(rd) = rd_opt {
+                                                    extract_resources(doc, rd)
+                                                } else {
+                                                    ResourceContext::default()
+                                                }
+                                            } else {
+                                                ResourceContext::default()
+                                            };
+                                        let annot_res = page_resources.merge(&ap_res);
+
+                                        let mut gstate = GraphicsGState {
+                                            ctm: init_matrix,
+                                            ..GraphicsGState::default()
+                                        };
+                                        let mut gstate_stack = Vec::new();
+
+                                        let ap_bytes = decompress_pdf_stream(ap_stream)
+                                            .unwrap_or_else(|_| ap_stream.content.clone());
+                                        if let Ok(ap_content) =
+                                            lopdf::content::Content::decode(&ap_bytes)
+                                        {
+                                            process_content_operations(
+                                                doc,
+                                                &ap_content.operations,
+                                                &annot_res,
+                                                &mut gstate,
+                                                &mut gstate_stack,
+                                                &mut text_runs,
+                                                &mut rects,
+                                                &mut images,
+                                                media_x0,
+                                                media_y0,
+                                                0,
+                                            );
                                         }
                                     }
                                 }
@@ -1523,7 +2093,6 @@ pub fn extract_page_layout(
                         }
                     }
                 }
-                _ => {}
             }
         }
     }
