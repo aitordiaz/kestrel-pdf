@@ -1215,3 +1215,58 @@ fn test_integration_concurrent_parallel_document_loading_and_stress() {
         }
     });
 }
+
+#[test]
+fn test_text_selection_spatial_query() {
+    let mut builder = SyntheticPdfBuilder::new();
+    let p_idx = builder.add_page(595.28, 841.89, 0);
+    builder.add_text(p_idx, "Alpha Document", 50.0, 750.0, 14.0, [0, 0, 0]);
+    builder.add_text(p_idx, "Beta Section", 50.0, 700.0, 12.0, [0, 0, 0]);
+    builder.add_text(p_idx, "Gamma Footer", 50.0, 400.0, 10.0, [0, 0, 0]);
+
+    let bytes = builder.build().expect("build synthetic PDF");
+    let session = DocumentSession::open_from_bytes(bytes, None).expect("open session");
+    let layout = session.get_page_layout(0).expect("page 0 layout");
+
+    let selected_runs = layout.find_text_runs_in_rect([40.0, 50.0, 300.0, 180.0], 0);
+    assert_eq!(selected_runs.len(), 2, "Should select Alpha and Beta runs");
+    assert!(selected_runs[0].1.text.contains("Alpha"));
+    assert!(selected_runs[1].1.text.contains("Beta"));
+
+    let combined_text = layout.get_text_in_rect([40.0, 50.0, 300.0, 180.0], 0);
+    assert!(combined_text.contains("Alpha Document"));
+    assert!(combined_text.contains("Beta Section"));
+    assert!(!combined_text.contains("Gamma Footer"));
+}
+
+#[test]
+fn test_image_selection_and_png_encoding() {
+    let mut builder = SyntheticPdfBuilder::new();
+    let p_idx = builder.add_page(595.28, 841.89, 0);
+    let mut img_rgb = Vec::with_capacity(16 * 16 * 3);
+    for _ in 0..(16 * 16) {
+        img_rgb.extend_from_slice(&[255, 0, 0]);
+    }
+    builder.add_image(p_idx, 100.0, 500.0, 150.0, 100.0, 16, 16, img_rgb);
+
+    let bytes = builder.build().expect("build synthetic PDF");
+    let session = DocumentSession::open_from_bytes(bytes, None).expect("open session");
+    let layout = session.get_page_layout(0).expect("page 0 layout");
+    assert_eq!(layout.images.len(), 1);
+
+    let img_match = layout.find_image_at_point(150.0, 280.0, 0);
+    assert!(img_match.is_some(), "Should hit image at (150, 280)");
+    let (idx, img) = img_match.unwrap();
+    assert_eq!(idx, 0);
+    assert_eq!(img.pixel_width, 16);
+    assert_eq!(img.pixel_height, 16);
+
+    assert!(layout.find_image_at_point(50.0, 50.0, 0).is_none());
+
+    let png_bytes = layout.encode_image_png(0).expect("encode image to PNG");
+    assert!(png_bytes.len() > 8);
+    assert_eq!(
+        &png_bytes[0..8],
+        &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
+    );
+}

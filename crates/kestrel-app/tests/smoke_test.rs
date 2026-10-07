@@ -1010,3 +1010,94 @@ fn test_e2e_toolbar_responsive_layout_with_ultra_long_filename() {
     app.active_tool = ActiveTool::Pan;
     assert_eq!(app.active_tool, ActiveTool::Pan);
 }
+
+#[test]
+fn test_e2e_select_and_copy_text_lifecycle() {
+    let mut builder = kestrel_core::synthetic::SyntheticPdfBuilder::new();
+    let p_idx = builder.add_page(595.28, 841.89, 0);
+    builder.add_text(
+        p_idx,
+        "Universal Contract Statement 2026",
+        60.0,
+        740.0,
+        14.0,
+        [0, 0, 0],
+    );
+
+    let bytes = builder.build().expect("Build synthetic PDF");
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(bytes, Some("contract.pdf".to_string()));
+
+    app.active_tool = ActiveTool::SelectText;
+    assert!(app.selection.is_empty());
+
+    // Select text on page 0
+    let layout = app.session.as_ref().unwrap().get_page_layout(0).unwrap();
+    let text = layout.get_text_in_rect([50.0, 50.0, 400.0, 150.0], 0);
+    assert!(text.contains("Universal Contract Statement 2026"));
+
+    app.selection.page_index = Some(0);
+    app.selection.selected_text_indices = vec![0];
+    app.selection.selected_text = Some(text);
+
+    assert!(app.selection.has_text());
+    assert!(!app.selection.is_empty());
+
+    let ctx = Context::default();
+    let copied = app.copy_selected_text(&ctx);
+    assert!(copied);
+    assert!(app.status_toast.is_some());
+    assert!(app.status_toast.as_ref().unwrap().contains("Copied"));
+
+    // Render frame and verify Copy Text button appears in toolbar
+    let out = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let rendered = extract_all_text_from_shapes(&out.shapes);
+    assert!(
+        rendered.iter().any(|t| t.contains("Copy Text")),
+        "Toolbar must display Copy Text button when text is selected"
+    );
+
+    // Clear selection
+    app.clear_selection();
+    assert!(app.selection.is_empty());
+}
+
+#[test]
+fn test_e2e_select_and_copy_image_lifecycle() {
+    let mut builder = kestrel_core::synthetic::SyntheticPdfBuilder::new();
+    let p_idx = builder.add_page(595.28, 841.89, 0);
+    let mut img_rgb = Vec::with_capacity(32 * 32 * 3);
+    for _ in 0..(32 * 32) {
+        img_rgb.extend_from_slice(&[0, 128, 255]);
+    }
+    builder.add_image(p_idx, 80.0, 450.0, 200.0, 120.0, 32, 32, img_rgb);
+
+    let bytes = builder.build().expect("Build synthetic PDF with image");
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(bytes, Some("diagram.pdf".to_string()));
+
+    app.active_tool = ActiveTool::SelectText;
+    app.selection.page_index = Some(0);
+    app.selection.selected_image_index = Some(0);
+
+    assert!(app.selection.has_image());
+    assert!(!app.selection.is_empty());
+
+    let ctx = Context::default();
+    let copied = app.copy_selected_image(&ctx);
+    assert!(copied);
+    assert!(app.status_toast.is_some());
+    assert!(app.status_toast.as_ref().unwrap().contains("32×32 px"));
+
+    // Render frame and verify Copy Image button appears in toolbar
+    let out = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let rendered = extract_all_text_from_shapes(&out.shapes);
+    assert!(
+        rendered.iter().any(|t| t.contains("Copy Image")),
+        "Toolbar must display Copy Image button when image is selected"
+    );
+}
