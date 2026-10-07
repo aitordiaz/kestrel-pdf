@@ -1,5 +1,7 @@
 # PDF Open-Source Engines & Readers Investigation
 
+> **Canonical Location**: See [docs/architecture/0002-engine-investigation.md](architecture/0002-engine-investigation.md).
+
 ## Executive Summary
 
 Building the most performant PDF reader and editor requires understanding the trade-offs between rendering speed, memory consumption, standards compliance, editing capabilities, and software licensing.

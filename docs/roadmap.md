@@ -1,5 +1,7 @@
 # Kestrel-PDF: MVP Development Roadmap
 
+> **Canonical Location**: See [docs/plans/0001-mvp-roadmap.md](plans/0001-mvp-roadmap.md) and the [Plans Directory](plans/README.md).
+
 This roadmap defines the implementation trajectory for Kestrel-PDF, emphasizing high-performance delivery, rigorous benchmarks, and strict modularity.
 
 ```mermaid
