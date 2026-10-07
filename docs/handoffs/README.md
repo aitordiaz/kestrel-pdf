@@ -18,6 +18,8 @@ When an AI agent or engineer pauses work or transfers context to another agent, 
 | **[0006](0006-v0.2.10-select-and-copy-text-and-images.md)** | [High-Fidelity Text and Image Selection & Clipboard Copy Engine](0006-v0.2.10-select-and-copy-text-and-images.md) | v0.2.10 | 2026-10-07 | **Completed** | 41 automated tests passing, marquee text selection, click image selection, system clipboard (arboard), shortcuts. |
 | **[0007](0007-v0.2.11-platform-standard-copy-shortcuts.md)** | [Multi-Platform Standard Copy Shortcuts & Keyboard Navigation](0007-v0.2.11-platform-standard-copy-shortcuts.md) | v0.2.11 | 2026-10-07 | **Completed** | 45 automated tests passing, Cmd+C (macOS), Ctrl+C / Ctrl+Ins (Win/Linux), Event::Copy, input focus guard, Select-All (Ctrl+A / Cmd+A). |
 | **[0008](0008-v0.2.12-tounicode-cmap-encoding-fidelity.md)** | [Universal ToUnicode CMap Architecture, Variable-Byte Decoding & Latin-1 Fidelity](0008-v0.2.12-tounicode-cmap-encoding-fidelity.md) | v0.2.12 | 2026-10-07 | **Completed** | 47 automated tests passing, 1-byte vs 2-byte ToUnicode CMaps, codespace ranges, indirect /Encoding resolution, Latin-1 accented preservation. |
+| **[0009](0009-v0.2.13-form-xobject-annot-appearance-and-qr-fidelity.md)** | [Form XObject Hierarchy, Annotation Appearances & 1-Bit QR Predictor Fidelity](0009-v0.2.13-form-xobject-annot-appearance-and-qr-fidelity.md) | v0.2.13 | 2026-10-07 | **Completed** | 52 automated tests passing, Form XObject recursive processing, /Annots signature appearance streams, PNG predictors, 1-bit QR codes, rotated text. |
+
 
 ---
 

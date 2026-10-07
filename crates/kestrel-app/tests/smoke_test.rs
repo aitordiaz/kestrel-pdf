@@ -1416,3 +1416,155 @@ fn test_e2e_keyboard_focus_guard() {
         "Copying document text must NOT trigger when keyboard input is focused by an active input widget"
     );
 }
+
+#[test]
+fn test_e2e_form_xobject_and_rotated_signature_rendering_smoke() {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+
+    // 1. Right-margin Form XObject with vertical verification code
+    let form_content = b"BT /F1 9 Tf 0 1 -1 0 15 50 Tm (CSV-VERIFICATION-CODE-98765) Tj ET";
+    let form_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 30.into(), 300.into()],
+            "Resources" => dictionary! {
+                "Font" => dictionary! {
+                    "F1" => font_id,
+                },
+            },
+        },
+        form_content.to_vec(),
+    ));
+
+    // 2. Electronic signature appearance stream with nested Form XObject and text
+    let n2_content = b"BT /F1 8 Tf 10 200 Td (Verified Digital Signer Identity) Tj ET";
+    let n2_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 230.into(), 230.into()],
+            "Resources" => dictionary! {
+                "Font" => dictionary! {
+                    "F1" => font_id,
+                },
+            },
+        },
+        n2_content.to_vec(),
+    ));
+
+    let frm_content = b"0 1 -1 0 230 0 cm /n2 Do";
+    let frm_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 230.into(), 230.into()],
+            "Resources" => dictionary! {
+                "XObject" => dictionary! {
+                    "n2" => n2_id,
+                },
+            },
+        },
+        frm_content.to_vec(),
+    ));
+
+    let ap_sig_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 30.into(), 230.into()],
+            "Resources" => dictionary! {
+                "XObject" => dictionary! {
+                    "FRM" => frm_id,
+                },
+            },
+        },
+        b"/FRM Do".to_vec(),
+    ));
+
+    let sig_annot_id = doc.add_object(dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Widget",
+        "FT" => "Sig",
+        "Rect" => vec![15.into(), 400.into(), 45.into(), 630.into()],
+        "AP" => dictionary! {
+            "N" => ap_sig_id,
+        },
+    });
+
+    let page_content = b"BT /F1 12 Tf 50 700 Td (Document Content Main Body) Tj ET /FormRight Do";
+    let content_id = doc.add_object(Stream::new(dictionary! {}, page_content.to_vec()));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Contents" => content_id,
+        "Annots" => vec![sig_annot_id.into()],
+        "Resources" => dictionary! {
+            "Font" => dictionary! {
+                "F1" => font_id,
+            },
+            "XObject" => dictionary! {
+                "FormRight" => form_id,
+            },
+        },
+    });
+
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buf = Vec::new();
+    doc.save_to(&mut buf).expect("Save synthetic document");
+
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(buf, Some("official_notice_smoke.pdf".to_string()));
+    assert!(app.session.is_some(), "Session must be initialized");
+
+    let ctx = Context::default();
+    let raw_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(1024.0, 768.0),
+        )),
+        ..Default::default()
+    };
+    let out = ctx.run(raw_input, |ctx| {
+        app.render_ui(ctx);
+    });
+
+    let rendered_texts = extract_all_text_from_shapes(&out.shapes);
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("Document Content Main Body")),
+        "Main body text must be rendered in UI"
+    );
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("CSV-VERIFICATION-CODE-98765")),
+        "Right-margin Form XObject verification code must be rendered in UI"
+    );
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("Verified Digital Signer Identity")),
+        "Left-margin digital signature appearance text must be rendered in UI"
+    );
+}

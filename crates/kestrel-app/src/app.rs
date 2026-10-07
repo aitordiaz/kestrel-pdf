@@ -1440,10 +1440,14 @@ impl KestrelApp {
                                             for tr in &layout.text_runs {
                                                 let font_size = (tr.font_size * self.zoom_level)
                                                     .clamp(6.0, 72.0);
+                                                let rad = tr.rotation_deg.to_radians();
+                                                let h = tr.font_size * 0.85;
+                                                let top_x = tr.x - h * rad.sin();
+                                                let top_y = tr.y + h * rad.cos();
                                                 let (vx, vy) =
                                                     kestrel_core::document::map_pdf_point_to_visual(
-                                                        tr.x,
-                                                        tr.y + tr.font_size * 0.85,
+                                                        top_x,
+                                                        top_y,
                                                         layout.width_pt,
                                                         layout.height_pt,
                                                         page_rot,
@@ -1458,13 +1462,23 @@ impl KestrelApp {
                                                         .to_lowercase()
                                                         .contains(&self.search_query.to_lowercase())
                                                 {
-                                                    let approx_w = (tr.text.chars().count() as f32)
-                                                        * font_size
-                                                        * 0.55
-                                                        + 4.0;
-                                                    let hl_rect = egui::Rect::from_min_size(
-                                                        egui::pos2(t_x - 2.0, t_y - 1.0),
-                                                        Vec2::new(approx_w, font_size + 2.0),
+                                                    let vb =
+                                                        layout.text_run_visual_bounds(tr, page_rot);
+                                                    let hl_rect = egui::Rect::from_min_max(
+                                                        egui::pos2(
+                                                            rect.left() + vb[0] * self.zoom_level
+                                                                - 2.0,
+                                                            rect.top() + vb[1] * self.zoom_level
+                                                                - 1.0,
+                                                        ),
+                                                        egui::pos2(
+                                                            rect.left()
+                                                                + vb[2] * self.zoom_level
+                                                                + 2.0,
+                                                            rect.top()
+                                                                + vb[3] * self.zoom_level
+                                                                + 1.0,
+                                                        ),
                                                     );
                                                     painter.rect_filled(
                                                         hl_rect,
@@ -1482,13 +1496,35 @@ impl KestrelApp {
                                                     tr.color[2],
                                                 );
 
-                                                painter.text(
-                                                    egui::pos2(t_x, t_y),
-                                                    egui::Align2::LEFT_TOP,
-                                                    &tr.text,
-                                                    font_id,
-                                                    color,
-                                                );
+                                                let eff_rot_deg = (tr.rotation_deg
+                                                    - page_rot as f32)
+                                                    .rem_euclid(360.0);
+                                                if eff_rot_deg.abs() < 1.0
+                                                    || (eff_rot_deg - 360.0).abs() < 1.0
+                                                {
+                                                    painter.text(
+                                                        egui::pos2(t_x, t_y),
+                                                        egui::Align2::LEFT_TOP,
+                                                        &tr.text,
+                                                        font_id,
+                                                        color,
+                                                    );
+                                                } else {
+                                                    let galley = painter.layout_no_wrap(
+                                                        tr.text.clone(),
+                                                        font_id,
+                                                        color,
+                                                    );
+                                                    let angle_rad = -eff_rot_deg.to_radians();
+                                                    painter.add(
+                                                        egui::epaint::TextShape::new(
+                                                            egui::pos2(t_x, t_y),
+                                                            galley,
+                                                            color,
+                                                        )
+                                                        .with_angle(angle_rad),
+                                                    );
+                                                }
                                             }
                                         } else if let Some(text) = session.get_page_text(page_idx) {
                                             // Fallback linear text lines

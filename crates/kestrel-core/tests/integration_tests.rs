@@ -1415,3 +1415,407 @@ fn test_integration_winansi_accented_characters_without_cmap() {
         page_text
     );
 }
+
+#[test]
+fn test_integration_form_xobject_text_and_rect_extraction() {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+
+    // Form XObject with its own content stream
+    let form_content = b"BT /F1 10 Tf 15 25 Td (Margin Verification Code 12345) Tj ET";
+    let form_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 200.into(), 50.into()],
+            "Resources" => dictionary! {
+                "Font" => dictionary! {
+                    "F1" => font_id,
+                },
+            },
+        },
+        form_content.to_vec(),
+    ));
+
+    // Page content invoking the Form XObject via Do with transformation matrix
+    let page_content =
+        b"BT /F1 12 Tf 50 700 Td (Main Document Body Text) Tj ET q 1 0 0 1 500 50 cm /Fm1 Do Q";
+    let content_id = doc.add_object(Stream::new(dictionary! {}, page_content.to_vec()));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Contents" => content_id,
+        "Resources" => dictionary! {
+            "Font" => dictionary! {
+                "F1" => font_id,
+            },
+            "XObject" => dictionary! {
+                "Fm1" => form_id,
+            },
+        },
+    });
+
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buffer = Vec::new();
+    doc.save_to(&mut buffer).expect("Serialize test PDF");
+
+    let session = DocumentSession::open_from_bytes(buffer, None).expect("Open document session");
+    let page_text = session.get_page_text(0).expect("Extract page text");
+
+    assert!(
+        page_text.contains("Margin Verification Code 12345"),
+        "Form XObject text must be extracted in plain text: got '{}'",
+        page_text
+    );
+
+    let layout = session.get_page_layout(0).expect("Visual layout");
+    let margin_run = layout
+        .text_runs
+        .iter()
+        .find(|tr| tr.text.contains("Margin Verification Code 12345"));
+    assert!(
+        margin_run.is_some(),
+        "Form XObject text run must be present in layout"
+    );
+    let run = margin_run.unwrap();
+    // Transformed position: 500 + 15 = 515, 50 + 25 = 75
+    assert!(
+        (run.x - 515.0).abs() < 5.0 && (run.y - 75.0).abs() < 5.0,
+        "Form XObject text coordinates must be transformed by parent CTM: got ({}, {})",
+        run.x,
+        run.y
+    );
+}
+
+#[test]
+fn test_integration_annot_signature_appearance_stream_extraction() {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+
+    // Appearance stream for the signature widget
+    let ap_content = b"BT /F1 8 Tf 2 10 Td (Digitally Signed by Authorized Officer) Tj ET";
+    let ap_stream_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 30.into(), 200.into()],
+            "Resources" => dictionary! {
+                "Font" => dictionary! {
+                    "F1" => font_id,
+                },
+            },
+        },
+        ap_content.to_vec(),
+    ));
+
+    // Annotation Widget (Signature) with /AP << /N ... >> on left margin [20, 500, 50, 700]
+    let annot_id = doc.add_object(dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Widget",
+        "FT" => "Sig",
+        "Rect" => vec![20.into(), 500.into(), 50.into(), 700.into()],
+        "AP" => dictionary! {
+            "N" => ap_stream_id,
+        },
+    });
+
+    let page_content = b"BT /F1 12 Tf 100 700 Td (Certified Official Document) Tj ET";
+    let content_id = doc.add_object(Stream::new(dictionary! {}, page_content.to_vec()));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Contents" => content_id,
+        "Annots" => vec![annot_id.into()],
+        "Resources" => dictionary! {
+            "Font" => dictionary! {
+                "F1" => font_id,
+            },
+        },
+    });
+
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buffer = Vec::new();
+    doc.save_to(&mut buffer).expect("Serialize test PDF");
+
+    let session = DocumentSession::open_from_bytes(buffer, None).expect("Open document session");
+    let layout = session.get_page_layout(0).expect("Visual layout");
+
+    let sig_run = layout
+        .text_runs
+        .iter()
+        .find(|tr| tr.text.contains("Digitally Signed by Authorized Officer"));
+    assert!(
+        sig_run.is_some(),
+        "Annotation appearance stream text must be extracted into visual layout text runs"
+    );
+    let run = sig_run.unwrap();
+    // Position must be inside the annotation rectangle [20, 500, 50, 700]
+    assert!(
+        run.x >= 18.0 && run.x <= 55.0 && run.y >= 490.0 && run.y <= 710.0,
+        "Signature text must be positioned inside annotation Rect: got ({}, {})",
+        run.x,
+        run.y
+    );
+}
+
+#[test]
+fn test_integration_1bit_monochrome_image_png_predictor_decoding() {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    // 16x16 1-bit monochrome image with PNG Predictor 15 (RFC 2083)
+    // 16 columns = 2 bytes per row. With filter byte = 3 bytes per row.
+    // 16 rows * 3 bytes = 48 bytes raw.
+    // Alternating checkerboard pattern:
+    // Even rows: filter=0, data=[0b10101010, 0b10101010] (0xAA, 0xAA)
+    // Odd rows:  filter=0, data=[0b01010101, 0b01010101] (0x55, 0x55)
+    let mut raw_png_stream = Vec::new();
+    for r in 0..16 {
+        raw_png_stream.push(0u8); // filter byte 0 (None)
+        if r % 2 == 0 {
+            raw_png_stream.push(0xAA);
+            raw_png_stream.push(0xAA);
+        } else {
+            raw_png_stream.push(0x55);
+            raw_png_stream.push(0x55);
+        }
+    }
+
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&raw_png_stream).unwrap();
+    let compressed = encoder.finish().unwrap();
+
+    let img_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Image",
+            "Width" => 16,
+            "Height" => 16,
+            "ColorSpace" => "DeviceGray",
+            "BitsPerComponent" => 1,
+            "Filter" => "FlateDecode",
+            "DecodeParms" => dictionary! {
+                "Columns" => 16,
+                "Colors" => 1,
+                "Predictor" => 15,
+                "BitsPerComponent" => 1,
+            },
+        },
+        compressed,
+    ));
+
+    // Place image via Do at [500, 30] with size 32x32
+    let page_content = b"q 32 0 0 32 500 30 cm /ImQR Do Q";
+    let content_id = doc.add_object(Stream::new(dictionary! {}, page_content.to_vec()));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Contents" => content_id,
+        "Resources" => dictionary! {
+            "XObject" => dictionary! {
+                "ImQR" => img_id,
+            },
+        },
+    });
+
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buffer = Vec::new();
+    doc.save_to(&mut buffer).expect("Serialize test PDF");
+
+    let session = DocumentSession::open_from_bytes(buffer, None).expect("Open document session");
+    let layout = session.get_page_layout(0).expect("Visual layout");
+
+    assert_eq!(
+        layout.images.len(),
+        1,
+        "Must extract the 1-bit monochrome image"
+    );
+    let img = &layout.images[0];
+    assert_eq!(img.pixel_width, 16);
+    assert_eq!(img.pixel_height, 16);
+    assert_eq!(
+        img.rgba.len(),
+        16 * 16 * 4,
+        "RGBA buffer must be exactly width * height * 4"
+    );
+
+    // Pixel (0, 0) is bit 7 of 0xAA (1), which is white (255, 255, 255)
+    // Pixel (1, 0) is bit 6 of 0xAA (0), which is black (0, 0, 0)
+    assert_eq!(img.rgba[0], 255, "Bit 1 should map to 255");
+    assert_eq!(img.rgba[4], 0, "Bit 0 should map to 0");
+}
+
+#[test]
+fn test_integration_nested_form_xobject_rotation() {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+
+    // Inner form n2: contains signature text
+    let n2_content = b"BT /F1 8 Tf 10 200 Td (Authorized Officer Signature) Tj ET";
+    let n2_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 230.into(), 230.into()],
+            "Resources" => dictionary! {
+                "Font" => dictionary! {
+                    "F1" => font_id,
+                },
+            },
+        },
+        n2_content.to_vec(),
+    ));
+
+    // Middle form FRM: rotated 90 degrees (0 1 -1 0 230 0 cm)
+    let frm_content = b"0 1 -1 0 230 0 cm /n2 Do";
+    let frm_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 230.into(), 230.into()],
+            "Resources" => dictionary! {
+                "XObject" => dictionary! {
+                    "n2" => n2_id,
+                },
+            },
+        },
+        frm_content.to_vec(),
+    ));
+
+    // Top appearance stream: invokes /FRM Do
+    let top_ap_content = b"/FRM Do";
+    let top_ap_id = doc.add_object(Stream::new(
+        dictionary! {
+            "Type" => "XObject",
+            "Subtype" => "Form",
+            "BBox" => vec![0.into(), 0.into(), 30.into(), 230.into()],
+            "Resources" => dictionary! {
+                "XObject" => dictionary! {
+                    "FRM" => frm_id,
+                },
+            },
+        },
+        top_ap_content.to_vec(),
+    ));
+
+    // Annotation Widget placed on left margin [20, 500, 50, 730]
+    let annot_id = doc.add_object(dictionary! {
+        "Type" => "Annot",
+        "Subtype" => "Widget",
+        "FT" => "Sig",
+        "Rect" => vec![20.into(), 500.into(), 50.into(), 730.into()],
+        "AP" => dictionary! {
+            "N" => top_ap_id,
+        },
+    });
+
+    let page_content = b"BT /F1 12 Tf 100 700 Td (Document Body) Tj ET";
+    let content_id = doc.add_object(Stream::new(dictionary! {}, page_content.to_vec()));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Contents" => content_id,
+        "Annots" => vec![annot_id.into()],
+        "Resources" => dictionary! {
+            "Font" => dictionary! {
+                "F1" => font_id,
+            },
+        },
+    });
+
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buffer = Vec::new();
+    doc.save_to(&mut buffer).expect("Serialize test PDF");
+
+    let session = DocumentSession::open_from_bytes(buffer, None).expect("Open document session");
+    let layout = session.get_page_layout(0).expect("Visual layout");
+
+    let sig_run = layout
+        .text_runs
+        .iter()
+        .find(|tr| tr.text.contains("Authorized Officer Signature"));
+    assert!(
+        sig_run.is_some(),
+        "Nested Form XObject hierarchy in annotation appearance must be extracted"
+    );
+    let run = sig_run.unwrap();
+    // Verify rotation angle is captured (around 90 degrees)
+    assert!(
+        (run.rotation_deg - 90.0).abs() < 5.0 || (run.rotation_deg + 270.0).abs() < 5.0,
+        "Nested rotation must be recorded in rotation_deg: got {}",
+        run.rotation_deg
+    );
+}
