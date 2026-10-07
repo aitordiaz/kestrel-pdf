@@ -147,7 +147,11 @@ fn test_e2e_smoke_app_lifecycle_and_ui_frame() {
     assert_eq!(app.zoom_level, 1.0);
     assert_eq!(app.current_page, 1);
     assert_eq!(app.total_pages, 0);
-    assert!(app.sidebar_open);
+    assert_eq!(app.page_input_text, "1");
+    assert!(
+        !app.sidebar_open,
+        "Sidebar must default to closed for focused reading"
+    );
 
     // 2. Simulate tool cycling
     let tools = [
@@ -236,6 +240,7 @@ fn test_e2e_form_fill_interaction_and_saving() {
 
     // Switch tool and sidebar tab
     app.active_tool = ActiveTool::FormFill;
+    app.sidebar_open = true;
     app.sidebar_tab = SidebarTab::Forms;
 
     // Render UI frame
@@ -722,9 +727,8 @@ fn test_e2e_full_lifecycle_stress_session() {
         app.render_ui(ctx);
     });
     let texts_empty = extract_all_text_from_shapes(&out_empty.shapes);
-    assert!(texts_empty
-        .iter()
-        .any(|t| t.contains("Welcome to Kestrel-PDF")));
+    assert!(texts_empty.iter().any(|t| t.contains("Kestrel-PDF")));
+    assert!(texts_empty.iter().any(|t| t.contains("Abrir fichero")));
 
     // 2. Load synthetic showcase PDF
     let pdf_bytes = generate_synthetic_visual_showcase_pdf();
@@ -984,11 +988,11 @@ fn test_e2e_toolbar_responsive_layout_with_ultra_long_filename() {
     );
 
     // 2. File action buttons remain visible and uncrowded in Tier 1
-    assert!(rendered_texts.iter().any(|t| t.contains("Open File")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Abrir fichero")));
     assert!(rendered_texts.iter().any(|t| t.contains("Save / Export")));
 
     // 3. Navigation controls remain visible and functional in Tier 2
-    assert!(rendered_texts.iter().any(|t| t.contains("Page 1 / 1")));
+    assert!(rendered_texts.iter().any(|t| t.contains("/ 1")));
     assert!(rendered_texts.iter().any(|t| t.contains("Prev")));
     assert!(rendered_texts.iter().any(|t| t.contains("Next")));
 
@@ -1566,5 +1570,93 @@ fn test_e2e_form_xobject_and_rotated_signature_rendering_smoke() {
             .iter()
             .any(|t| t.contains("Verified Digital Signer Identity")),
         "Left-margin digital signature appearance text must be rendered in UI"
+    );
+}
+
+#[test]
+fn test_e2e_page_navigator_text_input_jump_and_steppers() {
+    // 1. Empty state verification: prominent CTA and closed sidebar
+    let mut app = KestrelApp::default();
+    assert!(
+        !app.sidebar_open,
+        "Sidebar must be closed by default for focused reading"
+    );
+    assert_eq!(app.page_input_text, "1");
+
+    let ctx = Context::default();
+    let out_empty = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let texts_empty = extract_all_text_from_shapes(&out_empty.shapes);
+    assert!(
+        texts_empty.iter().any(|t| t.contains("Abrir fichero")),
+        "Empty state must display prominent Abrir fichero CTA button"
+    );
+    assert!(
+        texts_empty.iter().any(|t| t.contains("Kestrel-PDF")),
+        "Empty state must display Kestrel-PDF branding"
+    );
+
+    // 2. Load 4-page synthetic document
+    let pdf_bytes = generate_synthetic_visual_showcase_pdf();
+    app.load_document_bytes(pdf_bytes, Some("test_nav_showcase.pdf".to_string()));
+    assert_eq!(app.total_pages, 4);
+    assert_eq!(app.current_page, 1);
+    assert_eq!(app.page_input_text, "1");
+    assert!(
+        !app.sidebar_open,
+        "Sidebar remains closed when opening document"
+    );
+
+    // 3. Render loaded frame: Page Navigator displays input [ 1 ] and denominator / 4
+    let out_loaded = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let texts_loaded = extract_all_text_from_shapes(&out_loaded.shapes);
+    assert!(
+        texts_loaded.iter().any(|t| t.contains("/ 4")),
+        "Navigator must display total pages denominator '/ 4'"
+    );
+    assert!(
+        texts_loaded.iter().any(|t| t.contains("Prev")),
+        "Navigator must display Prev stepper"
+    );
+    assert!(
+        texts_loaded.iter().any(|t| t.contains("Next")),
+        "Navigator must display Next stepper"
+    );
+
+    // 4. Test direct jump via text input (typing "3")
+    app.set_current_page(3);
+    assert_eq!(app.current_page, 3);
+    assert_eq!(app.page_input_text, "3");
+
+    // 5. Test Stepper Next to page 4
+    app.set_current_page(app.current_page + 1);
+    assert_eq!(app.current_page, 4);
+    assert_eq!(app.page_input_text, "4");
+
+    // 6. Test clamping on overflow (typing page 999 -> clamped to 4)
+    app.set_current_page(999);
+    assert_eq!(app.current_page, 4, "Page must clamp to total_pages (4)");
+    assert_eq!(app.page_input_text, "4");
+
+    // 7. Test clamping on underflow (typing page 0 -> clamped to 1)
+    app.set_current_page(0);
+    assert_eq!(app.current_page, 1, "Page must clamp to minimum (1)");
+    assert_eq!(app.page_input_text, "1");
+
+    // 8. Re-render UI frame on page 1
+    let out_p1 = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let texts_p1 = extract_all_text_from_shapes(&out_p1.shapes);
+    assert!(
+        texts_p1.iter().any(|t| t.contains("Abrir fichero")),
+        "Header bar must retain prominent Abrir fichero button"
+    );
+    assert!(
+        texts_p1.iter().any(|t| t.contains("/ 4")),
+        "Navigator denominator must remain '/ 4'"
     );
 }
