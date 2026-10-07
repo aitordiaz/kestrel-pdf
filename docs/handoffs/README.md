@@ -14,6 +14,7 @@ When an AI agent or engineer pauses work or transfers context to another agent, 
 | **[0002](0002-v0.2.6-image-placement-and-form-fidelity.md)** | [Image Placement, Alpha SMask & AcroForm Layout Fidelity](0002-v0.2.6-image-placement-and-form-fidelity.md) | v0.2.6 | 2026-10-07 | **Completed** | 32 automated tests passing, fixed inverted CTM image placement, SMask alpha, and form text occlusion. |
 | **[0003](0003-v0.2.7-privacy-and-synthetic-enforcement.md)** | [Privacy Governance, Synthetic Testing & PDF Exclusion](0003-v0.2.7-privacy-and-synthetic-enforcement.md) | v0.2.7 | 2026-10-07 | **Completed** | Strict .gitignore for PDFs, removed disk-dependent tests, purged proprietary references and PII. |
 | **[0004](0004-v0.2.8-synthetic-stress-matrix-and-layer-engine.md)** | [In-Memory Synthetic Stress Matrix, Concurrency & Layers](0004-v0.2.8-synthetic-stress-matrix-and-layer-engine.md) | v0.2.8 | 2026-10-07 | **Completed** | 8-tier synthetic stress matrix, parallel execution, OCG layers, zero disk writes. |
+| **[0005](0005-v0.2.9-responsive-toolbar-and-ux-redefinition.md)** | [Responsive Toolbar Architecture & PDF Reader UX Redefinition](0005-v0.2.9-responsive-toolbar-and-ux-redefinition.md) | v0.2.9 | 2026-10-07 | **Completed** | Two-tier responsive toolbar, middle-truncation with tooltip, segmented controls, zero crowding. |
 
 ---
 

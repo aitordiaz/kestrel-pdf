@@ -1,5 +1,5 @@
 use egui::{Color32, Context};
-use kestrel_app::app::{ActiveTool, FitMode, KestrelApp, SidebarTab};
+use kestrel_app::app::{truncate_filename_middle, ActiveTool, FitMode, KestrelApp, SidebarTab};
 use kestrel_core::synthetic::{
     generate_all_synthetic_stress_tiers, generate_synthetic_forms_pdf,
     generate_synthetic_search_corpus_pdf, generate_synthetic_visual_showcase_pdf,
@@ -930,4 +930,83 @@ fn test_e2e_sequential_rapid_document_switching_across_all_tiers() {
         app.active_tool = ActiveTool::FormFill;
         app.active_tool = ActiveTool::Pan;
     }
+}
+
+#[test]
+fn test_e2e_truncate_filename_middle_helper() {
+    // 1. Short filename remains intact
+    assert_eq!(truncate_filename_middle("contract.pdf", 48), "contract.pdf");
+    assert_eq!(truncate_filename_middle("doc.pdf", 20), "doc.pdf");
+
+    // 2. Long filename gets truncated in the middle preserving extension
+    let long_name = "Super_Long_Enterprise_Contract_Specification_Document_With_Metadata_2026.pdf";
+    let truncated = truncate_filename_middle(long_name, 48);
+    assert_eq!(truncated.chars().count(), 48);
+    assert!(truncated.contains('…'));
+    assert!(truncated.starts_with("Super_Long_"));
+    assert!(truncated.ends_with(".pdf"));
+}
+
+#[test]
+fn test_e2e_toolbar_responsive_layout_with_ultra_long_filename() {
+    let ultra_long_name = "Super_Extremely_Long_Enterprise_Contract_Specification_Document_With_Lots_Of_Metadata_And_Long_Subsections_Version_2026_Final_Draft_Signed.pdf";
+    let pdf_bytes = kestrel_core::synthetic::generate_tier1_minimal_pdf();
+
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some(ultra_long_name.to_string()));
+
+    // Verify window title has full name
+    assert!(app.title_bar_text().contains(ultra_long_name));
+
+    // Run frame simulation
+    let ctx = Context::default();
+    let out = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+
+    let rendered_texts = extract_all_text_from_shapes(&out.shapes);
+
+    // 1. Header renders truncated title with .pdf extension preserved
+    let truncated_title = truncate_filename_middle(ultra_long_name, 48);
+    assert!(
+        rendered_texts.iter().any(|t| t.contains(&truncated_title)),
+        "Header must render truncated title '{}'. Rendered: {:?}",
+        truncated_title,
+        rendered_texts
+    );
+    assert!(
+        rendered_texts.iter().any(|t| t.contains(".pdf")),
+        "Truncated title must retain .pdf extension"
+    );
+
+    // 2. File action buttons remain visible and uncrowded in Tier 1
+    assert!(rendered_texts.iter().any(|t| t.contains("Open File")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Save / Export")));
+
+    // 3. Navigation controls remain visible and functional in Tier 2
+    assert!(rendered_texts.iter().any(|t| t.contains("Page 1 / 1")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Prev")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Next")));
+
+    // 4. Interactive tool selector buttons are present in Tier 2
+    assert!(rendered_texts.iter().any(|t| t.contains("Pan")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Select")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Forms")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Edit Text")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Sign Contract")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Redact")));
+
+    // 5. Zoom & Search controls are present in Tier 2
+    assert!(rendered_texts.iter().any(|t| t.contains("100%")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Fit Width")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Fit Page")));
+    assert!(rendered_texts.iter().any(|t| t.contains("Find")));
+
+    // 6. Test tool activation with ultra-long title loaded
+    app.active_tool = ActiveTool::FormFill;
+    assert_eq!(app.active_tool, ActiveTool::FormFill);
+    app.active_tool = ActiveTool::SelectText;
+    assert_eq!(app.active_tool, ActiveTool::SelectText);
+    app.active_tool = ActiveTool::Pan;
+    assert_eq!(app.active_tool, ActiveTool::Pan);
 }
