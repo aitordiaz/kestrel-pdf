@@ -880,7 +880,7 @@ fn emit_text_run(
     text_runs: &mut Vec<PositionedText>,
     operands: &[lopdf::Object],
     current_font: &[u8],
-    font_cmaps: &std::collections::HashMap<Vec<u8>, std::collections::HashMap<u16, String>>,
+    font_cmaps: &std::collections::HashMap<Vec<u8>, ToUnicodeCMap>,
     font_encodings: &std::collections::HashMap<Vec<u8>, String>,
     text_matrix: &mut [f32; 6],
     gstate: &GraphicsGState,
@@ -920,7 +920,7 @@ fn emit_text_run(
 fn decode_text_operands_string(
     operands: &[lopdf::Object],
     current_font: &[u8],
-    font_cmaps: &std::collections::HashMap<Vec<u8>, std::collections::HashMap<u16, String>>,
+    font_cmaps: &std::collections::HashMap<Vec<u8>, ToUnicodeCMap>,
     font_encodings: &std::collections::HashMap<Vec<u8>, String>,
 ) -> String {
     let mut output = String::new();
@@ -1059,17 +1059,46 @@ pub fn extract_page_layout(
 ) -> PageVisualLayout {
     // 1. Extract font ToUnicode CMaps and encodings for this page
     let fonts = doc.get_page_fonts(page_id);
-    let mut font_cmaps: std::collections::HashMap<Vec<u8>, std::collections::HashMap<u16, String>> =
+    let mut font_cmaps: std::collections::HashMap<Vec<u8>, ToUnicodeCMap> =
         std::collections::HashMap::new();
     let mut font_encodings: std::collections::HashMap<Vec<u8>, String> =
         std::collections::HashMap::new();
 
     for (font_name, font_dict) in &fonts {
-        if let Ok(enc_name) = font_dict.get(b"Encoding").and_then(Object::as_name_str) {
-            font_encodings.insert(font_name.clone(), enc_name.to_string());
+        // Resolve /Encoding (could be an indirect reference or dictionary)
+        let enc_obj = match font_dict.get(b"Encoding") {
+            Ok(Object::Reference(r)) => doc.get_object(*r).ok(),
+            Ok(obj) => Some(obj),
+            _ => None,
+        };
+        if let Some(obj) = enc_obj {
+            if let Ok(enc_name) = obj.as_name_str() {
+                font_encodings.insert(font_name.clone(), enc_name.to_string());
+            } else if let Ok(enc_dict) = obj.as_dict() {
+                if let Ok(base_enc) = enc_dict.get(b"BaseEncoding").and_then(Object::as_name_str) {
+                    font_encodings.insert(font_name.clone(), base_enc.to_string());
+                }
+            }
         }
 
-        if let Ok(to_unicode_obj) = font_dict.get(b"ToUnicode") {
+        // Resolve /ToUnicode (could be on font_dict or on DescendantFonts)
+        let to_unicode_obj = font_dict.get(b"ToUnicode").ok().or_else(|| {
+            if let Ok(descendants) = font_dict.get(b"DescendantFonts").and_then(Object::as_array) {
+                if let Some(first_desc) = descendants.first() {
+                    let desc_dict = match first_desc {
+                        Object::Reference(r) => doc.get_object(*r).and_then(Object::as_dict).ok(),
+                        Object::Dictionary(d) => Some(d),
+                        _ => None,
+                    };
+                    if let Some(d) = desc_dict {
+                        return d.get(b"ToUnicode").ok();
+                    }
+                }
+            }
+            None
+        });
+
+        if let Some(to_unicode_obj) = to_unicode_obj {
             let stream = match to_unicode_obj {
                 Object::Reference(ref_id) => {
                     doc.get_object(*ref_id).and_then(Object::as_stream).ok()
@@ -1574,17 +1603,171 @@ fn extract_hex_tokens(line: &str) -> Vec<&str> {
     tokens
 }
 
-pub fn parse_to_unicode_cmap(bytes: &[u8]) -> std::collections::HashMap<u16, String> {
-    let mut cmap = std::collections::HashMap::new();
+/// Represents an extracted ToUnicode CMap supporting 1-byte, 2-byte, or mixed codespaces.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ToUnicodeCMap {
+    /// Mapping from character code to decoded Unicode string.
+    pub map: std::collections::HashMap<u16, String>,
+    /// Default byte length per character code (1 or 2).
+    pub code_bytes: usize,
+    /// Explicit codespace ranges (start, end, byte_len) parsed from begincodespacerange.
+    pub codespace_ranges: Vec<(u32, u32, usize)>,
+}
+
+impl std::ops::Deref for ToUnicodeCMap {
+    type Target = std::collections::HashMap<u16, String>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl ToUnicodeCMap {
+    /// Returns true if the CMap contains no character mappings.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Decodes a raw byte slice from a content stream string into the output buffer.
+    pub fn decode_bytes(&self, bytes: &[u8], output: &mut String) {
+        if bytes.is_empty() {
+            return;
+        }
+
+        // 1. If explicit codespace ranges are present, match each position
+        if !self.codespace_ranges.is_empty() {
+            let mut idx = 0;
+            while idx < bytes.len() {
+                let remaining = bytes.len() - idx;
+                let mut matched = false;
+
+                // Check 1-byte ranges first if remaining >= 1
+                let b0 = bytes[idx] as u32;
+                for &(start, end, len) in &self.codespace_ranges {
+                    if len == 1 && b0 >= start && b0 <= end {
+                        let code = b0 as u16;
+                        if let Some(s) = self.map.get(&code) {
+                            output.push_str(s);
+                        } else if (32..=126).contains(&b0) || b0 == 10 || b0 == 9 {
+                            output.push((b0 as u8) as char);
+                        }
+                        idx += 1;
+                        matched = true;
+                        break;
+                    }
+                }
+                if matched {
+                    continue;
+                }
+
+                // Check 2-byte ranges if remaining >= 2
+                if remaining >= 2 {
+                    let code2 = u16::from_be_bytes([bytes[idx], bytes[idx + 1]]) as u32;
+                    for &(start, end, len) in &self.codespace_ranges {
+                        if len == 2 && code2 >= start && code2 <= end {
+                            let code = code2 as u16;
+                            if let Some(s) = self.map.get(&code) {
+                                output.push_str(s);
+                            } else if code <= 127
+                                && ((32..=126).contains(&(code as u8)) || code == 10 || code == 9)
+                            {
+                                output.push((code as u8) as char);
+                            }
+                            idx += 2;
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if matched {
+                        continue;
+                    }
+                }
+
+                // Fallback to self.code_bytes if no range matched
+                if self.code_bytes == 1 || remaining < 2 {
+                    let code = bytes[idx] as u16;
+                    if let Some(s) = self.map.get(&code) {
+                        output.push_str(s);
+                    } else if (32..=126).contains(&bytes[idx])
+                        || bytes[idx] == 10
+                        || bytes[idx] == 9
+                    {
+                        output.push(bytes[idx] as char);
+                    }
+                    idx += 1;
+                } else {
+                    let code = u16::from_be_bytes([bytes[idx], bytes[idx + 1]]);
+                    if let Some(s) = self.map.get(&code) {
+                        output.push_str(s);
+                    } else if code <= 127
+                        && ((32..=126).contains(&(code as u8)) || code == 10 || code == 9)
+                    {
+                        output.push((code as u8) as char);
+                    }
+                    idx += 2;
+                }
+            }
+            return;
+        }
+
+        // 2. If no codespace ranges defined, use self.code_bytes
+        if self.code_bytes == 1 {
+            for &b in bytes {
+                let code = b as u16;
+                if let Some(s) = self.map.get(&code) {
+                    output.push_str(s);
+                } else if (32..=126).contains(&b) || b == 10 || b == 9 {
+                    output.push(b as char);
+                }
+            }
+        } else {
+            for chunk in bytes.chunks(2) {
+                let code = if chunk.len() == 2 {
+                    u16::from_be_bytes([chunk[0], chunk[1]])
+                } else {
+                    chunk[0] as u16
+                };
+
+                if let Some(s) = self.map.get(&code) {
+                    output.push_str(s);
+                } else if code <= 127
+                    && ((32..=126).contains(&(code as u8)) || code == 10 || code == 9)
+                {
+                    output.push((code as u8) as char);
+                }
+            }
+        }
+    }
+}
+
+pub fn parse_to_unicode_cmap(bytes: &[u8]) -> ToUnicodeCMap {
+    let mut cmap = ToUnicodeCMap {
+        map: std::collections::HashMap::new(),
+        code_bytes: 2,
+        codespace_ranges: Vec::new(),
+    };
     let text = String::from_utf8_lossy(bytes);
 
+    let mut in_codespace = false;
     let mut in_bfchar = false;
     let mut in_bfrange = false;
+    let mut max_src_hex_len = 0;
 
     for line in text.lines() {
         let trimmed = line.trim();
+        if trimmed.contains("begincodespacerange") {
+            in_codespace = true;
+            in_bfchar = false;
+            in_bfrange = false;
+            continue;
+        }
+        if trimmed.contains("endcodespacerange") {
+            in_codespace = false;
+            continue;
+        }
         if trimmed.contains("beginbfchar") {
             in_bfchar = true;
+            in_codespace = false;
             in_bfrange = false;
             continue;
         }
@@ -1594,6 +1777,7 @@ pub fn parse_to_unicode_cmap(bytes: &[u8]) -> std::collections::HashMap<u16, Str
         }
         if trimmed.contains("beginbfrange") {
             in_bfrange = true;
+            in_codespace = false;
             in_bfchar = false;
             continue;
         }
@@ -1602,16 +1786,34 @@ pub fn parse_to_unicode_cmap(bytes: &[u8]) -> std::collections::HashMap<u16, Str
             continue;
         }
 
+        if in_codespace {
+            let tokens = extract_hex_tokens(trimmed);
+            for chunk in tokens.chunks(2) {
+                if chunk.len() == 2 {
+                    let start_hex = chunk[0];
+                    let end_hex = chunk[1];
+                    let byte_len = if start_hex.len() <= 2 { 1 } else { 2 };
+                    if let (Ok(start), Ok(end)) = (
+                        u32::from_str_radix(start_hex, 16),
+                        u32::from_str_radix(end_hex, 16),
+                    ) {
+                        cmap.codespace_ranges.push((start, end, byte_len));
+                    }
+                }
+            }
+        }
+
         if in_bfchar {
             let tokens = extract_hex_tokens(trimmed);
             for chunk in tokens.chunks(2) {
                 if chunk.len() == 2 {
                     let src_hex = chunk[0];
                     let dst_hex = chunk[1];
+                    max_src_hex_len = max_src_hex_len.max(src_hex.len());
                     if let Ok(src_code) = u16::from_str_radix(src_hex, 16) {
                         let dst_str = hex_to_utf16_string(dst_hex);
                         if !dst_str.is_empty() {
-                            cmap.insert(src_code, dst_str);
+                            cmap.map.insert(src_code, dst_str);
                         }
                     }
                 }
@@ -1620,25 +1822,52 @@ pub fn parse_to_unicode_cmap(bytes: &[u8]) -> std::collections::HashMap<u16, Str
 
         if in_bfrange {
             let tokens = extract_hex_tokens(trimmed);
-            if tokens.len() == 3 {
+            if tokens.len() >= 3 {
                 let start_hex = tokens[0];
                 let end_hex = tokens[1];
-                let dst_start_hex = tokens[2];
-                if let (Ok(start), Ok(end), Ok(dst_start)) = (
+                max_src_hex_len = max_src_hex_len.max(start_hex.len());
+                if let (Ok(start), Ok(end)) = (
                     u16::from_str_radix(start_hex, 16),
                     u16::from_str_radix(end_hex, 16),
-                    u16::from_str_radix(dst_start_hex, 16),
                 ) {
-                    for code in start..=end {
-                        let offset = code - start;
-                        let dst_code = dst_start + offset;
-                        if let Some(ch) = char::from_u32(dst_code as u32) {
-                            cmap.insert(code, ch.to_string());
+                    if tokens.len() == 3 {
+                        let dst_start_hex = tokens[2];
+                        if let Ok(dst_start) = u32::from_str_radix(dst_start_hex, 16) {
+                            for code in start..=end {
+                                let offset = (code - start) as u32;
+                                let dst_code = dst_start + offset;
+                                if let Some(ch) = char::from_u32(dst_code) {
+                                    cmap.map.insert(code, ch.to_string());
+                                }
+                            }
+                        }
+                    } else {
+                        // Array form: <start> <end> [ <dst0> <dst1> ... ]
+                        for (idx, code) in (start..=end).enumerate() {
+                            if let Some(&dst_hex) = tokens.get(2 + idx) {
+                                let dst_str = hex_to_utf16_string(dst_hex);
+                                if !dst_str.is_empty() {
+                                    cmap.map.insert(code, dst_str);
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    // Determine default code_bytes
+    if !cmap.codespace_ranges.is_empty() {
+        if cmap.codespace_ranges.iter().all(|(_, _, len)| *len == 1) {
+            cmap.code_bytes = 1;
+        } else {
+            cmap.code_bytes = 2;
+        }
+    } else if max_src_hex_len > 0 && max_src_hex_len <= 2 {
+        cmap.code_bytes = 1;
+    } else {
+        cmap.code_bytes = 2;
     }
 
     cmap
@@ -1667,30 +1896,16 @@ fn hex_to_utf16_string(hex: &str) -> String {
 fn decode_single_string(
     output: &mut String,
     bytes: &[u8],
-    cmap: Option<&std::collections::HashMap<u16, String>>,
+    cmap: Option<&ToUnicodeCMap>,
     encoding: Option<&str>,
 ) {
     if bytes.is_empty() {
         return;
     }
 
-    // 1. If CMap is available, use it (2-byte keys)
+    // 1. If CMap is available, use it (handles 1-byte, 2-byte, or mixed codespaces dynamically)
     if let Some(cmap) = cmap {
-        for chunk in bytes.chunks(2) {
-            let code = if chunk.len() == 2 {
-                u16::from_be_bytes([chunk[0], chunk[1]])
-            } else {
-                chunk[0] as u16
-            };
-
-            if let Some(mapped) = cmap.get(&code) {
-                output.push_str(mapped);
-            } else if let Some(ch) = char::from_u32(code as u32) {
-                if !ch.is_control() || ch == '\n' || ch == '\t' {
-                    output.push(ch);
-                }
-            }
-        }
+        cmap.decode_bytes(bytes, output);
         return;
     }
 
@@ -1735,10 +1950,47 @@ fn decode_single_string(
     if !sanitized.is_empty() {
         output.push_str(&sanitized);
     } else {
-        // Fallback: extract any printable ASCII
+        // Fallback: decode Windows-1252 / ISO-8859-1 for accented characters (e.g. Spanish, French, German)
         for &b in bytes {
             if (32..=126).contains(&b) || b == b'\n' || b == b'\t' {
                 output.push(b as char);
+            } else if b >= 160 {
+                // ISO-8859-1 codepoints 160..=255 map directly to Unicode U+00A0..=U+00FF
+                if let Some(ch) = char::from_u32(b as u32) {
+                    output.push(ch);
+                }
+            } else {
+                // Windows-1252 specific symbols (128..=159)
+                match b {
+                    128 => output.push('€'),
+                    130 => output.push('‚'),
+                    131 => output.push('ƒ'),
+                    132 => output.push('„'),
+                    133 => output.push('…'),
+                    134 => output.push('†'),
+                    135 => output.push('‡'),
+                    136 => output.push('ˆ'),
+                    137 => output.push('‰'),
+                    138 => output.push('Š'),
+                    139 => output.push('‹'),
+                    140 => output.push('Œ'),
+                    142 => output.push('Ž'),
+                    145 => output.push('‘'),
+                    146 => output.push('’'),
+                    147 => output.push('“'),
+                    148 => output.push('”'),
+                    149 => output.push('•'),
+                    150 => output.push('–'),
+                    151 => output.push('—'),
+                    152 => output.push('˜'),
+                    153 => output.push('™'),
+                    154 => output.push('š'),
+                    155 => output.push('›'),
+                    156 => output.push('œ'),
+                    158 => output.push('ž'),
+                    159 => output.push('Ÿ'),
+                    _ => {}
+                }
             }
         }
     }

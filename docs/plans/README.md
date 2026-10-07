@@ -17,6 +17,7 @@ Under **Spec-Driven Development (SDD)**, every feature, epic, or major fix must 
 | **[0005](0005-responsive-toolbar-and-ux-redefinition.md)** | [Responsive Toolbar Architecture & PDF Reader UX Redefinition](0005-responsive-toolbar-and-ux-redefinition.md) | v0.2.9 | **Completed** | Decouple metadata from actions with 2-tier toolbar, middle-truncation, segmented tools, and zero crowding. |
 | **[0006](0006-select-and-copy-text-and-images.md)** | [High-Fidelity Text and Image Selection & Clipboard Copy Engine](0006-select-and-copy-text-and-images.md) | v0.2.10 | **Completed** | Interactive text marquee and click-to-select image, visual highlight bounds, system clipboard copy, and keyboard shortcuts. |
 | **[0007](0007-platform-standard-copy-shortcuts.md)** | [Multi-Platform Standard Copy Shortcuts & Keyboard Navigation](0007-platform-standard-copy-shortcuts.md) | v0.2.11 | **Completed** | Standard copy shortcuts per platform (Cmd+C, Ctrl+C, Ctrl+Ins, Key::Copy, Event::Copy), focus guard, Select All. |
+| **[0008](0008-tounicode-cmap-and-encoding-fidelity.md)** | [Universal ToUnicode CMap Architecture, Variable-Byte Decoding & Latin-1/WinAnsi Fidelity](0008-tounicode-cmap-and-encoding-fidelity.md) | v0.2.12 | **Completed** | 1-byte vs 2-byte ToUnicode CMaps, codespace range resolution, /Encoding dereferencing, Latin-1 / WinAnsi accented character preservation. |
 
 ---
 

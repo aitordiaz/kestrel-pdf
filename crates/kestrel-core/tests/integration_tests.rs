@@ -1270,3 +1270,148 @@ fn test_image_selection_and_png_encoding() {
         &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]
     );
 }
+
+#[test]
+fn test_integration_single_byte_tounicode_cmap_extraction() {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    // 1-byte ToUnicode CMap with <00> <FF> codespace range
+    let cmap_content = b"/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Custom-1Byte-ToUnicode def
+/CMapType 2 def
+1 begincodespacerange
+<00> <FF>
+endcodespacerange
+10 beginbfchar
+<01> <0041>
+<02> <0079>
+<03> <0075>
+<04> <006E>
+<05> <0074>
+<06> <0061>
+<07> <006D>
+<08> <0069>
+<09> <0065>
+<0A> <006F>
+endbfchar
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end";
+    let cmap_id = doc.add_object(Stream::new(dictionary! {}, cmap_content.to_vec()));
+
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "TrueType",
+        "BaseFont" => "CustomSubsetFont",
+        "FirstChar" => 0,
+        "LastChar" => 10,
+        "ToUnicode" => cmap_id,
+    });
+
+    // Content stream with concatenated 1-byte hex tokens: <0607> is 'a' and 'm', <0904> is 'e' and 'n'
+    let content_stream = b"BT /F1 12 Tf 50 700 Td [<01> 1 <02> 1 <03> 1 <04> 1 <05> 1 <0607> 1 <08> 1 <0904> 1 <05> 1 <0A>] TJ ET";
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content_stream.to_vec()));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Contents" => content_id,
+        "Resources" => dictionary! {
+            "Font" => dictionary! {
+                "F1" => font_id,
+            },
+        },
+    });
+
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buffer = Vec::new();
+    doc.save_to(&mut buffer).expect("Serialize test PDF");
+
+    let session = DocumentSession::open_from_bytes(buffer, None).expect("Open document session");
+    let page_text = session.get_page_text(0).expect("Extract page text");
+
+    assert!(
+        page_text.contains("Ayuntamiento"),
+        "1-byte ToUnicode CMap must correctly decode multi-character strings: got '{}'",
+        page_text
+    );
+    // Crucial check: verify that corrupted Arabic and Devanagari characters are completely absent
+    assert!(
+        !page_text.contains('\u{0607}') && !page_text.contains('\u{0904}'),
+        "Corrupted Arabic/Devanagari characters must NOT appear in output: got '{}'",
+        page_text
+    );
+}
+
+#[test]
+fn test_integration_winansi_accented_characters_without_cmap() {
+    let mut doc = Document::with_version("1.7");
+    let pages_id = doc.new_object_id();
+
+    let font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "TrueType",
+        "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+
+    // Contains Windows-1252 bytes for 'ó' (0xF3) and 'ñ' (0xF1)
+    let content_stream =
+        b"BT /F1 12 Tf 50 700 Td (Notificaci\xF3n de Resoluci\xF3n y A\xF1o 2026) Tj ET";
+    let content_id = doc.add_object(Stream::new(dictionary! {}, content_stream.to_vec()));
+
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        "Contents" => content_id,
+        "Resources" => dictionary! {
+            "Font" => dictionary! {
+                "F1" => font_id,
+            },
+        },
+    });
+
+    let pages_dict = dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.objects.insert(pages_id, Object::Dictionary(pages_dict));
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+
+    let mut buffer = Vec::new();
+    doc.save_to(&mut buffer).expect("Serialize test PDF");
+
+    let session = DocumentSession::open_from_bytes(buffer, None).expect("Open document session");
+    let page_text = session.get_page_text(0).expect("Extract page text");
+
+    assert!(
+        page_text.contains("Notificación")
+            && page_text.contains("Resolución")
+            && page_text.contains("Año 2026"),
+        "WinAnsiEncoding must preserve accented Spanish characters: got '{}'",
+        page_text
+    );
+}
