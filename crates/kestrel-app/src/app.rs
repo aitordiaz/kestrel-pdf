@@ -159,6 +159,39 @@ pub fn truncate_filename_middle(name: &str, max_len: usize) -> String {
     format!("{}…{}", front, back)
 }
 
+/// Downsamples an RGBA image buffer if either dimension exceeds `max_side` to prevent GPU texture dimension overflow panics.
+/// If already within bounds, returns a borrowed slice with zero allocations.
+pub fn clamp_rgba_image_to_max_side<'a>(
+    width: usize,
+    height: usize,
+    rgba: &'a [u8],
+    max_side: usize,
+) -> (usize, usize, std::borrow::Cow<'a, [u8]>) {
+    if (width <= max_side && height <= max_side) || width == 0 || height == 0 || max_side == 0 {
+        return (width, height, std::borrow::Cow::Borrowed(rgba));
+    }
+
+    let max_dim = width.max(height);
+    let scale = (max_side as f32 / max_dim as f32).min(1.0);
+    let new_w = ((width as f32 * scale).round() as usize).clamp(1, max_side);
+    let new_h = ((height as f32 * scale).round() as usize).clamp(1, max_side);
+
+    let mut scaled = Vec::with_capacity(new_w * new_h * 4);
+    for y in 0..new_h {
+        let src_y = ((y as f32 / scale).floor() as usize).min(height.saturating_sub(1));
+        for x in 0..new_w {
+            let src_x = ((x as f32 / scale).floor() as usize).min(width.saturating_sub(1));
+            let idx = (src_y * width + src_x) * 4;
+            if idx + 4 <= rgba.len() {
+                scaled.extend_from_slice(&rgba[idx..idx + 4]);
+            } else {
+                scaled.extend_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+    }
+    (new_w, new_h, std::borrow::Cow::Owned(scaled))
+}
+
 /// Returns the platform-appropriate copy shortcut string representation (e.g. "⌘C" or "Ctrl+C / Ctrl+Ins").
 #[cfg(target_os = "macos")]
 pub fn standard_copy_shortcut_str() -> &'static str {
@@ -1629,17 +1662,30 @@ impl KestrelApp {
                                     device_pixel_ratio_x100: 100,
                                 };
 
-                                // Request tile from background worker
-                                let target_w = (base_width as u32).max(64);
-                                let target_h = (base_height as u32).max(64);
+                                let max_side = ctx.input(|i| i.max_texture_side).clamp(512, 16384);
+
+                                // Request tile from background worker (clamped to max texture dimension)
+                                let scale_ratio = if base_width > max_side as f32 || base_height > max_side as f32 {
+                                    (max_side as f32 / base_width.max(base_height)).min(1.0)
+                                } else {
+                                    1.0
+                                };
+                                let target_w = ((base_width * scale_ratio) as u32).clamp(64, max_side as u32);
+                                let target_h = ((base_height * scale_ratio) as u32).clamp(64, max_side as u32);
                                 self.pipeline.request_tile(key, target_w, target_h);
 
                                 // Check if rasterized tile is in cache, bind to GPU texture
                                 if !self.textures.contains_key(&key) {
                                     if let Some(tile_buf) = self.pipeline.cache().get(&key) {
-                                        let img = ColorImage::from_rgba_unmultiplied(
-                                            [tile_buf.width as usize, tile_buf.height as usize],
+                                        let (w, h, buf) = clamp_rgba_image_to_max_side(
+                                            tile_buf.width as usize,
+                                            tile_buf.height as usize,
                                             &tile_buf.rgba,
+                                            max_side,
+                                        );
+                                        let img = ColorImage::from_rgba_unmultiplied(
+                                            [w, h],
+                                            &buf,
                                         );
                                         let handle = ctx.load_texture(
                                             format!(
@@ -1872,13 +1918,17 @@ impl KestrelApp {
                                                 .image_textures
                                                 .entry(t_key)
                                                 .or_insert_with(|| {
+                                                    let max_side = ctx.input(|i| i.max_texture_side).clamp(512, 16384);
+                                                    let (w, h, buf) = clamp_rgba_image_to_max_side(
+                                                        img.pixel_width as usize,
+                                                        img.pixel_height as usize,
+                                                        &img.rgba,
+                                                        max_side,
+                                                    );
                                                     let color_image =
                                                         ColorImage::from_rgba_unmultiplied(
-                                                            [
-                                                                img.pixel_width as usize,
-                                                                img.pixel_height as usize,
-                                                            ],
-                                                            &img.rgba,
+                                                            [w, h],
+                                                            &buf,
                                                         );
                                                     ctx.load_texture(
                                                         format!(

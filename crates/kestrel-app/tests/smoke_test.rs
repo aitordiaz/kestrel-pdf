@@ -1,8 +1,8 @@
 use egui::{Color32, Context};
 use kestrel_app::app::{
-    is_copy_shortcut_pressed, is_select_all_shortcut_pressed, standard_copy_shortcut_str,
-    standard_select_all_shortcut_str, truncate_filename_middle, ActiveTool, FitMode, KestrelApp,
-    SidebarTab,
+    clamp_rgba_image_to_max_side, is_copy_shortcut_pressed, is_select_all_shortcut_pressed,
+    standard_copy_shortcut_str, standard_select_all_shortcut_str, truncate_filename_middle,
+    ActiveTool, FitMode, KestrelApp, SidebarTab,
 };
 use kestrel_core::synthetic::{
     generate_all_synthetic_stress_tiers, generate_synthetic_forms_pdf,
@@ -2046,4 +2046,34 @@ fn test_e2e_responsive_toolbar_modes_at_different_viewport_widths() {
         compact_texts.iter().any(|t| t.contains("Save")),
         "Compact viewport must render compact 'Save' CTA"
     );
+}
+
+#[test]
+fn test_clamp_rgba_image_to_max_side_and_texture_safety() {
+    // 1. Image already within bounds -> returns borrowed Cow with original dimensions
+    let small_rgba = vec![255u8; 100 * 50 * 4];
+    let (w, h, cow) = clamp_rgba_image_to_max_side(100, 50, &small_rgba, 2048);
+    assert_eq!(w, 100);
+    assert_eq!(h, 50);
+    assert!(matches!(cow, std::borrow::Cow::Borrowed(_)));
+
+    // 2. High-resolution tile (e.g. 2976 x 4209 at 500% zoom) exceeding 2048 max texture side
+    let large_w = 2976;
+    let large_h = 4209;
+    let large_rgba = vec![128u8; large_w * large_h * 4];
+    let (clamped_w, clamped_h, clamped_cow) =
+        clamp_rgba_image_to_max_side(large_w, large_h, &large_rgba, 2048);
+
+    assert!(clamped_w <= 2048, "Width {} must be <= 2048", clamped_w);
+    assert!(clamped_h <= 2048, "Height {} must be <= 2048", clamped_h);
+    assert_eq!(clamped_h, 2048);
+    assert_eq!(clamped_w, 1448);
+    assert_eq!(clamped_cow.len(), clamped_w * clamped_h * 4);
+    assert!(matches!(clamped_cow, std::borrow::Cow::Owned(_)));
+
+    // 3. Confirm loading into egui Context with 2048 limit does not panic
+    let ctx = egui::Context::default();
+    let img = egui::ColorImage::from_rgba_unmultiplied([clamped_w, clamped_h], &clamped_cow);
+    let handle = ctx.load_texture("safe_clamped_tile", img, egui::TextureOptions::LINEAR);
+    assert_eq!(handle.size(), [clamped_w, clamped_h]);
 }
