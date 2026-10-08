@@ -19,7 +19,7 @@ Under **Spec-Driven Development (SDD)**, every feature, epic, or major fix must 
 | **[0007](0007-platform-standard-copy-shortcuts.md)** | [Multi-Platform Standard Copy Shortcuts & Keyboard Navigation](0007-platform-standard-copy-shortcuts.md) | v0.2.11 | **Completed** | Standard copy shortcuts per platform (Cmd+C, Ctrl+C, Ctrl+Ins, Key::Copy, Event::Copy), focus guard, Select All. |
 | **[0008](0008-tounicode-cmap-and-encoding-fidelity.md)** | [Universal ToUnicode CMap Architecture, Variable-Byte Decoding & Latin-1/WinAnsi Fidelity](0008-tounicode-cmap-and-encoding-fidelity.md) | v0.2.12 | **Completed** | 1-byte vs 2-byte ToUnicode CMaps, codespace range resolution, /Encoding dereferencing, Latin-1 / WinAnsi accented character preservation. |
 | **[0009](0009-form-xobject-annot-appearance-and-qr-fidelity.md)** | [Form XObject Hierarchy, Annotation Appearance Streams & 1-Bit PNG Predictor Fidelity](0009-form-xobject-annot-appearance-and-qr-fidelity.md) | v0.2.13 | **Completed** | Form XObjects via Do, /Annots /AP /N appearance streams, 1-bit monochrome images, PNG predictor 10..=15, rotated text. |
-| **[0010](0010-modern-ui-ux-and-component-system.md)** | [Modern UI/UX Redefinition, Design System & In-Flow Page Navigator](0010-modern-ui-ux-and-component-system.md) | Next Iteration | **Active** | Professional salmon/ochre tokens, prominent 'Abrir fichero' CTA, [1]/N page input navigator, distraction-free canvas. |
+| **[0010](0010-modern-ui-ux-and-component-system.md)** | [Modern UI/UX Redefinition, Design System & In-Flow Page Navigator](0010-modern-ui-ux-and-component-system.md) | v0.2.14 | **Completed** | Professional salmon/ochre tokens, prominent 'Abrir fichero' CTA, [1]/N page input navigator, distraction-free canvas. |
 
 
 ---

@@ -1,8 +1,8 @@
 # PLAN-0010: Modern UI/UX Redefinition, Design System & In-Flow Page Navigator
 
-- **Target Version**: Next Iteration (Foundational PR to `main` — No release trigger)
+- **Target Version**: v0.2.14
 - **Author**: Antigravity (Advanced Agentic Coding)
-- **Status**: In Progress
+- **Status**: Completed
 - **Date**: 2026-10-08
 
 ---
@@ -70,10 +70,10 @@ To ensure quality and prevent regressions, improvements are deployed iteratively
 
 ## 3. Phased Execution Checklist
 
-- [ ] **Phase 1**: Add UI Style Guide and UX User Flows ADRs to `docs/architecture/`.
-- [ ] **Phase 2**: Define `frontend` skill in `.agents/skills/frontend/SKILL.md`.
-- [ ] **Phase 3**: Implement Milestone 1 (In-Flow Page Navigator `[ 1 ] / N` and sidebar simplification).
-- [ ] **Phase 4**: Implement Milestone 2 (Salmon/Ochre theme tokens and prominent "Abrir fichero" primary CTA).
-- [ ] **Phase 5**: Update E2E smoke tests in `crates/kestrel-app/tests/smoke_test.rs`.
-- [ ] **Phase 6**: Pre-flight verification (`cargo fmt`, `cargo clippy`, `cargo test`, `cargo check wasm32`).
-- [ ] **Phase 7**: Open non-releasing Pull Request to `main`.
+- [x] **Phase 1**: Add UI Style Guide and UX User Flows ADRs to `docs/architecture/`.
+- [x] **Phase 2**: Define `frontend` skill in `.agents/skills/frontend/SKILL.md`.
+- [x] **Phase 3**: Implement Milestone 1 (In-Flow Page Navigator `[ 1 ] / N` and sidebar simplification).
+- [x] **Phase 4**: Implement Milestone 2 (Salmon/Ochre theme tokens and prominent "Abrir fichero" primary CTA).
+- [x] **Phase 5**: Update E2E smoke tests in `crates/kestrel-app/tests/smoke_test.rs`.
+- [x] **Phase 6**: Pre-flight verification (`cargo fmt`, `cargo clippy`, `cargo test`, `cargo check wasm32`).
+- [x] **Phase 7**: Merge Pull Request and publish release `v0.2.14`.
