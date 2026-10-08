@@ -1819,3 +1819,143 @@ fn test_integration_nested_form_xobject_rotation() {
         run.rotation_deg
     );
 }
+
+#[test]
+fn test_integration_phase3_page_tree_mutations() {
+    let pdf_bytes = kestrel_core::synthetic::SyntheticPdfBuilder::new()
+        .with_page(595.28, 841.89)
+        .with_page(595.28, 841.89)
+        .build()
+        .expect("Build PDF");
+
+    let mut session = DocumentSession::open_from_bytes(pdf_bytes, None).expect("Open session");
+    assert_eq!(session.page_count, 2);
+
+    // 1. Insert blank page at index 1
+    session
+        .insert_blank_page(1, 400.0, 600.0)
+        .expect("Insert blank page");
+    assert_eq!(session.page_count, 3);
+    assert_eq!(session.pages.len(), 3);
+    assert_eq!(session.pages[1].width_pt, 400.0);
+    assert_eq!(session.pages[1].height_pt, 600.0);
+
+    // 2. Reorder page: move index 2 to index 0
+    session.reorder_page(2, 0).expect("Reorder page 2 to 0");
+    assert_eq!(session.page_count, 3);
+
+    // 3. Duplicate page at index 0
+    session.duplicate_page(0).expect("Duplicate page 0");
+    assert_eq!(session.page_count, 4);
+
+    // 4. Delete page at index 1
+    session.delete_page(1).expect("Delete page 1");
+    assert_eq!(session.page_count, 3);
+
+    // 5. Serialize and reload
+    let saved_bytes = session.save_to_bytes().expect("Save mutated document");
+    let reloaded = DocumentSession::open_from_bytes(saved_bytes, None).expect("Reload document");
+    assert_eq!(reloaded.page_count, 3);
+}
+
+#[test]
+fn test_integration_phase3_in_place_text_edit_and_insertion() {
+    let pdf_bytes = kestrel_core::synthetic::SyntheticPdfBuilder::new()
+        .with_page(595.28, 841.89)
+        .build()
+        .expect("Build PDF");
+
+    let mut session = DocumentSession::open_from_bytes(pdf_bytes, None).expect("Open session");
+
+    // 1. Insert a custom text box
+    session
+        .insert_text_box(
+            0,
+            "Urgent Invoice Payment Due",
+            100.0,
+            500.0,
+            18.0,
+            [220, 38, 38],
+        )
+        .expect("Insert text box");
+
+    let matches = session.search_text("Urgent Invoice");
+    assert!(
+        !matches.is_empty(),
+        "Inserted text box must be discoverable in search"
+    );
+
+    let page_text = session.get_page_text(0).unwrap_or_default();
+    assert!(page_text.contains("Urgent Invoice Payment Due"));
+
+    // 2. Modify the text run
+    let layout = session.get_page_layout(0).expect("Layout");
+    let run_idx = layout
+        .text_runs
+        .iter()
+        .position(|tr| tr.text.contains("Urgent Invoice"))
+        .expect("Find inserted run index");
+
+    session
+        .modify_text_run(0, run_idx, "Approved Invoice Settled")
+        .expect("Modify text run");
+
+    let page_text_mod = session.get_page_text(0).unwrap_or_default();
+    assert!(page_text_mod.contains("Approved Invoice Settled"));
+
+    // 3. Delete the text run
+    let layout_mod = session.get_page_layout(0).expect("Layout mod");
+    let mod_run_idx = layout_mod
+        .text_runs
+        .iter()
+        .position(|tr| tr.text.contains("Approved Invoice"))
+        .expect("Find modified run index");
+
+    session
+        .delete_text_run(0, mod_run_idx)
+        .expect("Delete text run");
+
+    let page_text_after_del = session.get_page_text(0).unwrap_or_default();
+    assert!(!page_text_after_del.contains("Approved Invoice"));
+}
+
+#[test]
+fn test_integration_phase3_image_manipulation() {
+    let pdf_bytes = kestrel_core::synthetic::SyntheticPdfBuilder::new()
+        .with_page(595.28, 841.89)
+        .build()
+        .expect("Build PDF");
+
+    let mut session = DocumentSession::open_from_bytes(pdf_bytes, None).expect("Open session");
+
+    // 1. Insert a new 10x10 green image
+    let green_rgba = [0, 255, 0, 255].repeat(100);
+    session
+        .insert_image(0, &green_rgba, 10, 10, 50.0, 300.0, 100.0, 100.0)
+        .expect("Insert image");
+
+    let layout = session.get_page_layout(0).expect("Page layout");
+    assert_eq!(
+        layout.images.len(),
+        1,
+        "Image must be extracted into layout"
+    );
+    assert_eq!(layout.images[0].pixel_width, 10);
+    assert_eq!(layout.images[0].pixel_height, 10);
+
+    // 2. Replace with a 15x15 blue image
+    let blue_rgba = [0, 0, 255, 255].repeat(225);
+    session
+        .replace_image(0, 0, &blue_rgba, 15, 15)
+        .expect("Replace image");
+
+    let layout_replaced = session.get_page_layout(0).expect("Page layout");
+    assert_eq!(layout_replaced.images.len(), 1);
+    assert_eq!(layout_replaced.images[0].pixel_width, 15);
+    assert_eq!(layout_replaced.images[0].pixel_height, 15);
+
+    // 3. Delete the image
+    session.delete_image(0, 0).expect("Delete image");
+    let layout_deleted = session.get_page_layout(0).expect("Page layout");
+    assert_eq!(layout_deleted.images.len(), 0);
+}

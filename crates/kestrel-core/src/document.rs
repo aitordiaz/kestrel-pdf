@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use lopdf::{Dictionary, Object, Stream};
+use lopdf::{dictionary, Dictionary, Object, Stream};
 use std::path::{Path, PathBuf};
 
 use crate::forms::{self, FormField};
@@ -81,6 +81,8 @@ pub struct VisualImage {
     pub pixel_width: u32,
     pub pixel_height: u32,
     pub rgba: Vec<u8>,
+    pub xobject_id: Option<lopdf::ObjectId>,
+    pub xobject_name: Option<Vec<u8>>,
 }
 
 /// Visual layout representation of a single PDF page for high-fidelity rendering.
@@ -610,12 +612,654 @@ impl DocumentSession {
             self.digital_signature = Some(meta);
         }
 
+        // 3.5. Synchronize page rotations
+        for page in &self.pages {
+            let page_num = (page.index + 1) as u32;
+            if let Some(&page_obj_id) = pages.get(&page_num) {
+                if let Ok(page_dict) = doc
+                    .get_object_mut(page_obj_id)
+                    .and_then(Object::as_dict_mut)
+                {
+                    page_dict.set("Rotate", Object::Integer(page.rotation_degrees as i64));
+                }
+            }
+        }
+
         // 4. Save and return bytes
         let mut output = Vec::new();
         doc.save_to(&mut output)
             .context("Failed to write PDF binary stream")?;
         Ok(output)
     }
+
+    /// Inserts a new blank page with specified width and height in points at the given 0-based index.
+    pub fn insert_blank_page(
+        &mut self,
+        at_index: usize,
+        width_pt: f32,
+        height_pt: f32,
+    ) -> Result<()> {
+        let mut doc = lopdf::Document::load_mem(&self.raw_bytes)
+            .context("Failed to load PDF for inserting blank page")?;
+
+        let root_id = doc.trailer.get(b"Root").and_then(Object::as_reference)?;
+        let catalog = doc.get_object(root_id).and_then(Object::as_dict)?;
+        let pages_id = catalog.get(b"Pages").and_then(Object::as_reference)?;
+
+        let content_stream = Stream::new(Dictionary::new(), Vec::new());
+        let content_id = doc.add_object(Object::Stream(content_stream));
+
+        let mut new_page_dict = Dictionary::new();
+        new_page_dict.set("Type", Object::Name(b"Page".to_vec()));
+        new_page_dict.set("Parent", Object::Reference(pages_id));
+        new_page_dict.set(
+            "MediaBox",
+            Object::Array(vec![
+                0.0.into(),
+                0.0.into(),
+                width_pt.into(),
+                height_pt.into(),
+            ]),
+        );
+        new_page_dict.set("Resources", Object::Dictionary(Dictionary::new()));
+        new_page_dict.set("Contents", Object::Reference(content_id));
+
+        let new_page_id = doc.add_object(Object::Dictionary(new_page_dict));
+
+        let pages_obj = doc
+            .get_object_mut(pages_id)
+            .and_then(Object::as_dict_mut)
+            .context("Failed to locate Pages dictionary")?;
+        let kids = match pages_obj.get_mut(b"Kids") {
+            Ok(Object::Array(arr)) => arr,
+            _ => anyhow::bail!("Pages object does not contain Kids array"),
+        };
+
+        let insert_pos = at_index.min(kids.len());
+        kids.insert(insert_pos, Object::Reference(new_page_id));
+        let new_count = kids.len() as i64;
+        pages_obj.set("Count", Object::Integer(new_count));
+
+        let mut output = Vec::new();
+        doc.save_to(&mut output)?;
+        *self = Self::open_from_bytes(output, self.file_path.clone())?;
+        Ok(())
+    }
+
+    /// Deletes the page at the given 0-based index. Cannot delete the only remaining page.
+    pub fn delete_page(&mut self, page_index: usize) -> Result<()> {
+        if self.page_count <= 1 {
+            anyhow::bail!("Cannot delete the only remaining page in the document");
+        }
+        if page_index >= self.page_count as usize {
+            anyhow::bail!("Page index {} out of bounds", page_index);
+        }
+
+        let mut doc = lopdf::Document::load_mem(&self.raw_bytes)
+            .context("Failed to load PDF for deleting page")?;
+        let page_map = doc.get_pages();
+        let page_num = (page_index + 1) as u32;
+        let target_page_id = *page_map
+            .get(&page_num)
+            .context("Target page object not found in document")?;
+
+        let page_obj = doc.get_object(target_page_id)?;
+        let parent_id = page_obj
+            .as_dict()?
+            .get(b"Parent")
+            .and_then(Object::as_reference)?;
+
+        let parent_obj = doc
+            .get_object_mut(parent_id)
+            .and_then(Object::as_dict_mut)
+            .context("Failed to locate parent Pages dictionary")?;
+        if let Ok(Object::Array(kids)) = parent_obj.get_mut(b"Kids") {
+            kids.retain(|k| match k {
+                Object::Reference(id) => *id != target_page_id,
+                _ => true,
+            });
+            let new_count = kids.len() as i64;
+            parent_obj.set("Count", Object::Integer(new_count));
+        }
+
+        doc.delete_object(target_page_id);
+
+        let mut output = Vec::new();
+        doc.save_to(&mut output)?;
+        *self = Self::open_from_bytes(output, self.file_path.clone())?;
+        Ok(())
+    }
+
+    /// Reorders a page from `from_index` to `to_index` (0-based).
+    pub fn reorder_page(&mut self, from_index: usize, to_index: usize) -> Result<()> {
+        if from_index == to_index
+            || from_index >= self.page_count as usize
+            || to_index >= self.page_count as usize
+        {
+            return Ok(());
+        }
+
+        let mut doc = lopdf::Document::load_mem(&self.raw_bytes)
+            .context("Failed to load PDF for reordering pages")?;
+        let root_id = doc.trailer.get(b"Root").and_then(Object::as_reference)?;
+        let catalog = doc.get_object(root_id).and_then(Object::as_dict)?;
+        let pages_id = catalog.get(b"Pages").and_then(Object::as_reference)?;
+
+        let pages_obj = doc
+            .get_object_mut(pages_id)
+            .and_then(Object::as_dict_mut)
+            .context("Failed to locate Pages dictionary")?;
+        if let Ok(Object::Array(kids)) = pages_obj.get_mut(b"Kids") {
+            if from_index < kids.len() && to_index < kids.len() {
+                let item = kids.remove(from_index);
+                kids.insert(to_index, item);
+            }
+        }
+
+        let mut output = Vec::new();
+        doc.save_to(&mut output)?;
+        *self = Self::open_from_bytes(output, self.file_path.clone())?;
+        Ok(())
+    }
+
+    /// Duplicates the page at `page_index` and inserts the duplicate right after it.
+    pub fn duplicate_page(&mut self, page_index: usize) -> Result<()> {
+        if page_index >= self.page_count as usize {
+            anyhow::bail!("Page index out of bounds");
+        }
+
+        let mut doc = lopdf::Document::load_mem(&self.raw_bytes)
+            .context("Failed to load PDF for duplicating page")?;
+        let page_map = doc.get_pages();
+        let page_num = (page_index + 1) as u32;
+        let target_page_id = *page_map
+            .get(&page_num)
+            .context("Target page object not found")?;
+
+        let page_dict_copy = doc.get_object(target_page_id)?.as_dict()?.clone();
+        let parent_id = page_dict_copy
+            .get(b"Parent")
+            .and_then(Object::as_reference)?;
+
+        let new_page_id = doc.add_object(Object::Dictionary(page_dict_copy));
+
+        let parent_obj = doc
+            .get_object_mut(parent_id)
+            .and_then(Object::as_dict_mut)
+            .context("Failed to locate parent Pages dictionary")?;
+        if let Ok(Object::Array(kids)) = parent_obj.get_mut(b"Kids") {
+            let pos = kids
+                .iter()
+                .position(|k| matches!(k, Object::Reference(id) if *id == target_page_id))
+                .unwrap_or(kids.len());
+            kids.insert(pos + 1, Object::Reference(new_page_id));
+            let new_count = kids.len() as i64;
+            parent_obj.set("Count", Object::Integer(new_count));
+        }
+
+        let mut output = Vec::new();
+        doc.save_to(&mut output)?;
+        *self = Self::open_from_bytes(output, self.file_path.clone())?;
+        Ok(())
+    }
+
+    /// Inserts a new text box on `page_index` at (x, y) with the specified typography.
+    pub fn insert_text_box(
+        &mut self,
+        page_index: usize,
+        text: &str,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: [u8; 3],
+    ) -> Result<()> {
+        let mut doc = lopdf::Document::load_mem(&self.raw_bytes)
+            .context("Failed to load PDF for inserting text box")?;
+        let page_map = doc.get_pages();
+        let page_num = (page_index + 1) as u32;
+        let page_id = *page_map
+            .get(&page_num)
+            .context("Page not found for inserting text box")?;
+
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+            "Encoding" => "WinAnsiEncoding",
+        });
+
+        if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(Object::as_dict_mut) {
+            if !page_dict.has(b"Resources") {
+                page_dict.set("Resources", Object::Dictionary(Dictionary::new()));
+            }
+        }
+
+        let mut resources_obj = {
+            let page_dict = doc.get_object(page_id)?.as_dict()?;
+            match page_dict.get(b"Resources")? {
+                Object::Reference(r) => doc.get_object(*r)?.clone(),
+                Object::Dictionary(d) => Object::Dictionary(d.clone()),
+                _ => Object::Dictionary(Dictionary::new()),
+            }
+        };
+
+        let res_dict = resources_obj.as_dict_mut()?;
+        if !res_dict.has(b"Font") {
+            res_dict.set("Font", Object::Dictionary(Dictionary::new()));
+        }
+        if let Ok(font_dict) = res_dict.get_mut(b"Font").and_then(Object::as_dict_mut) {
+            font_dict.set("F_Kest", Object::Reference(font_id));
+        }
+
+        let res_id = doc.add_object(resources_obj);
+        if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(Object::as_dict_mut) {
+            page_dict.set("Resources", Object::Reference(res_id));
+        }
+
+        let r = (color[0] as f32 / 255.0).clamp(0.0, 1.0);
+        let g = (color[1] as f32 / 255.0).clamp(0.0, 1.0);
+        let b = (color[2] as f32 / 255.0).clamp(0.0, 1.0);
+        let escaped = escape_pdf_literal_string(text);
+        let stream_content = format!(
+            "q\nBT\n/F_Kest {} Tf\n{:.3} {:.3} {:.3} rg\n1 0 0 1 {:.2} {:.2} Tm\n({}) Tj\nET\nQ\n",
+            font_size, r, g, b, x, y, escaped
+        );
+        let stream_id = doc.add_object(Object::Stream(Stream::new(
+            Dictionary::new(),
+            stream_content.into_bytes(),
+        )));
+
+        if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(Object::as_dict_mut) {
+            if let Ok(contents) = page_dict.get_mut(b"Contents") {
+                match contents {
+                    Object::Reference(existing_id) => {
+                        *contents = Object::Array(vec![
+                            Object::Reference(*existing_id),
+                            Object::Reference(stream_id),
+                        ]);
+                    }
+                    Object::Array(arr) => {
+                        arr.push(Object::Reference(stream_id));
+                    }
+                    _ => {
+                        *contents = Object::Reference(stream_id);
+                    }
+                }
+            } else {
+                page_dict.set("Contents", Object::Reference(stream_id));
+            }
+        }
+
+        let mut output = Vec::new();
+        doc.save_to(&mut output)?;
+        *self = Self::open_from_bytes(output, self.file_path.clone())?;
+        Ok(())
+    }
+
+    /// Modifies the text of an existing text run on `page_index` at `run_index`.
+    pub fn modify_text_run(
+        &mut self,
+        page_index: usize,
+        run_index: usize,
+        new_text: &str,
+    ) -> Result<()> {
+        let mut doc = lopdf::Document::load_mem(&self.raw_bytes)
+            .context("Failed to load PDF for modifying text run")?;
+        let page_map = doc.get_pages();
+        let page_num = (page_index + 1) as u32;
+        let page_id = *page_map
+            .get(&page_num)
+            .context("Page not found for modifying text run")?;
+
+        let decompressed = get_page_content_decompressed(&doc, page_id)?;
+        let mut content = lopdf::content::Content::decode(&decompressed)
+            .context("Failed to decode page content stream operations")?;
+
+        let mut text_op_count = 0;
+        let mut replaced = false;
+
+        for op in &mut content.operations {
+            match op.operator.as_str() {
+                "Tj" | "'" | "\"" => {
+                    if text_op_count == run_index {
+                        let escaped_bytes = new_text.as_bytes().to_vec();
+                        if let Some(first_operand) = op.operands.first_mut() {
+                            *first_operand = Object::string_literal(escaped_bytes);
+                        } else {
+                            op.operands = vec![Object::string_literal(escaped_bytes)];
+                        }
+                        replaced = true;
+                        break;
+                    }
+                    text_op_count += 1;
+                }
+                "TJ" => {
+                    if text_op_count == run_index {
+                        let escaped_bytes = new_text.as_bytes().to_vec();
+                        op.operands =
+                            vec![Object::Array(vec![Object::string_literal(escaped_bytes)])];
+                        replaced = true;
+                        break;
+                    }
+                    text_op_count += 1;
+                }
+                _ => {}
+            }
+        }
+
+        if !replaced {
+            anyhow::bail!("Text run index {} not found in content stream", run_index);
+        }
+
+        let encoded_bytes = content.encode()?;
+        let stream_id = doc.add_object(Object::Stream(Stream::new(
+            Dictionary::new(),
+            encoded_bytes,
+        )));
+
+        if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(Object::as_dict_mut) {
+            page_dict.set("Contents", Object::Reference(stream_id));
+        }
+
+        let mut output = Vec::new();
+        doc.save_to(&mut output)?;
+        *self = Self::open_from_bytes(output, self.file_path.clone())?;
+        Ok(())
+    }
+
+    /// Deletes the text run on `page_index` at `run_index`.
+    pub fn delete_text_run(&mut self, page_index: usize, run_index: usize) -> Result<()> {
+        let mut doc = lopdf::Document::load_mem(&self.raw_bytes)
+            .context("Failed to load PDF for deleting text run")?;
+        let page_map = doc.get_pages();
+        let page_num = (page_index + 1) as u32;
+        let page_id = *page_map
+            .get(&page_num)
+            .context("Page not found for deleting text run")?;
+
+        let decompressed = get_page_content_decompressed(&doc, page_id)?;
+        let mut content = lopdf::content::Content::decode(&decompressed)
+            .context("Failed to decode page content stream operations")?;
+
+        let mut text_op_count = 0;
+        let mut target_idx = None;
+
+        for (i, op) in content.operations.iter().enumerate() {
+            match op.operator.as_str() {
+                "Tj" | "TJ" | "'" | "\"" => {
+                    if text_op_count == run_index {
+                        target_idx = Some(i);
+                        break;
+                    }
+                    text_op_count += 1;
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(i) = target_idx {
+            content.operations.remove(i);
+        } else {
+            anyhow::bail!("Text run index {} not found for deletion", run_index);
+        }
+
+        let encoded_bytes = content.encode()?;
+        let stream_id = doc.add_object(Object::Stream(Stream::new(
+            Dictionary::new(),
+            encoded_bytes,
+        )));
+
+        if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(Object::as_dict_mut) {
+            page_dict.set("Contents", Object::Reference(stream_id));
+        }
+
+        let mut output = Vec::new();
+        doc.save_to(&mut output)?;
+        *self = Self::open_from_bytes(output, self.file_path.clone())?;
+        Ok(())
+    }
+
+    /// Inserts a new raster image on `page_index` with RGBA pixel bytes and destination geometry in PDF points.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_image(
+        &mut self,
+        page_index: usize,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        x: f32,
+        y: f32,
+        width_pt: f32,
+        height_pt: f32,
+    ) -> Result<()> {
+        let mut doc = lopdf::Document::load_mem(&self.raw_bytes)
+            .context("Failed to load PDF for inserting image")?;
+        let page_map = doc.get_pages();
+        let page_num = (page_index + 1) as u32;
+        let page_id = *page_map
+            .get(&page_num)
+            .context("Page not found for inserting image")?;
+
+        let mut rgb_bytes = Vec::with_capacity((width * height * 3) as usize);
+        for chunk in rgba.as_chunks::<4>().0 {
+            rgb_bytes.push(chunk[0]);
+            rgb_bytes.push(chunk[1]);
+            rgb_bytes.push(chunk[2]);
+        }
+        let compressed_rgb = compress_flate(&rgb_bytes)?;
+
+        let mut img_dict = Dictionary::new();
+        img_dict.set("Type", Object::Name(b"XObject".to_vec()));
+        img_dict.set("Subtype", Object::Name(b"Image".to_vec()));
+        img_dict.set("Width", Object::Integer(width as i64));
+        img_dict.set("Height", Object::Integer(height as i64));
+        img_dict.set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
+        img_dict.set("BitsPerComponent", Object::Integer(8));
+        img_dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
+
+        let img_stream = Stream::new(img_dict, compressed_rgb);
+        let img_id = doc.add_object(Object::Stream(img_stream));
+
+        let im_name = format!("ImKest{}", doc.objects.len());
+
+        if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(Object::as_dict_mut) {
+            if !page_dict.has(b"Resources") {
+                page_dict.set("Resources", Object::Dictionary(Dictionary::new()));
+            }
+        }
+
+        let mut resources_obj = {
+            let page_dict = doc.get_object(page_id)?.as_dict()?;
+            match page_dict.get(b"Resources")? {
+                Object::Reference(r) => doc.get_object(*r)?.clone(),
+                Object::Dictionary(d) => Object::Dictionary(d.clone()),
+                _ => Object::Dictionary(Dictionary::new()),
+            }
+        };
+
+        let res_dict = resources_obj.as_dict_mut()?;
+        if !res_dict.has(b"XObject") {
+            res_dict.set("XObject", Object::Dictionary(Dictionary::new()));
+        }
+        if let Ok(xobj_dict) = res_dict.get_mut(b"XObject").and_then(Object::as_dict_mut) {
+            xobj_dict.set(im_name.as_bytes(), Object::Reference(img_id));
+        }
+
+        let res_id = doc.add_object(resources_obj);
+        if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(Object::as_dict_mut) {
+            page_dict.set("Resources", Object::Reference(res_id));
+        }
+
+        let do_ops = format!(
+            "q\n{:.2} 0 0 {:.2} {:.2} {:.2} cm\n/{} Do\nQ\n",
+            width_pt, height_pt, x, y, im_name
+        );
+        let do_stream_id = doc.add_object(Object::Stream(Stream::new(
+            Dictionary::new(),
+            do_ops.into_bytes(),
+        )));
+
+        if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(Object::as_dict_mut) {
+            if let Ok(contents) = page_dict.get_mut(b"Contents") {
+                match contents {
+                    Object::Reference(existing_id) => {
+                        *contents = Object::Array(vec![
+                            Object::Reference(*existing_id),
+                            Object::Reference(do_stream_id),
+                        ]);
+                    }
+                    Object::Array(arr) => {
+                        arr.push(Object::Reference(do_stream_id));
+                    }
+                    _ => {
+                        *contents = Object::Reference(do_stream_id);
+                    }
+                }
+            } else {
+                page_dict.set("Contents", Object::Reference(do_stream_id));
+            }
+        }
+
+        let mut output = Vec::new();
+        doc.save_to(&mut output)?;
+        *self = Self::open_from_bytes(output, self.file_path.clone())?;
+        Ok(())
+    }
+
+    /// Replaces the embedded image on `page_index` at `image_index` with new RGBA pixels.
+    pub fn replace_image(
+        &mut self,
+        page_index: usize,
+        image_index: usize,
+        new_rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        let layout = self
+            .get_page_layout(page_index)
+            .context("Page layout not found")?;
+        let target_img = layout
+            .images
+            .get(image_index)
+            .context("Image index out of bounds")?;
+        let xobj_id = target_img
+            .xobject_id
+            .context("Target image has no associated XObject ID")?;
+
+        let mut doc = lopdf::Document::load_mem(&self.raw_bytes)
+            .context("Failed to load PDF for replacing image")?;
+
+        let mut rgb_bytes = Vec::with_capacity((width * height * 3) as usize);
+        for chunk in new_rgba.as_chunks::<4>().0 {
+            rgb_bytes.push(chunk[0]);
+            rgb_bytes.push(chunk[1]);
+            rgb_bytes.push(chunk[2]);
+        }
+        let compressed_rgb = compress_flate(&rgb_bytes)?;
+
+        let xobj = doc
+            .get_object_mut(xobj_id)
+            .context("Image XObject not found")?;
+        let mut dict = if let Ok(stream) = xobj.as_stream() {
+            stream.dict.clone()
+        } else {
+            anyhow::bail!("XObject is not a stream");
+        };
+        dict.set("Width", Object::Integer(width as i64));
+        dict.set("Height", Object::Integer(height as i64));
+        dict.set("ColorSpace", Object::Name(b"DeviceRGB".to_vec()));
+        dict.set("BitsPerComponent", Object::Integer(8));
+        dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
+        dict.set("Length", Object::Integer(compressed_rgb.len() as i64));
+
+        let new_stream = Stream::new(dict, compressed_rgb);
+        *xobj = Object::Stream(new_stream);
+
+        let mut output = Vec::new();
+        doc.save_to(&mut output)?;
+        *self = Self::open_from_bytes(output, self.file_path.clone())?;
+        Ok(())
+    }
+
+    /// Deletes the embedded image on `page_index` at `image_index`.
+    pub fn delete_image(&mut self, page_index: usize, image_index: usize) -> Result<()> {
+        let layout = self
+            .get_page_layout(page_index)
+            .context("Page layout not found")?;
+        let target_img = layout
+            .images
+            .get(image_index)
+            .context("Image index out of bounds")?;
+        let xobj_id = target_img.xobject_id;
+        let xobj_name = target_img.xobject_name.clone();
+
+        let mut doc = lopdf::Document::load_mem(&self.raw_bytes)
+            .context("Failed to load PDF for deleting image")?;
+        let page_map = doc.get_pages();
+        let page_num = (page_index + 1) as u32;
+        let page_id = *page_map.get(&page_num).context("Page not found")?;
+
+        if let Some(target_name) = &xobj_name {
+            let decompressed = get_page_content_decompressed(&doc, page_id)?;
+            if let Ok(mut content) = lopdf::content::Content::decode(&decompressed) {
+                content.operations.retain(|op| {
+                    if op.operator == "Do" {
+                        if let Some(arg) = op.operands.first() {
+                            if let Ok(name) = arg.as_name() {
+                                return name != target_name.as_slice();
+                            }
+                        }
+                    }
+                    true
+                });
+                if let Ok(encoded_bytes) = content.encode() {
+                    let stream_id = doc.add_object(Object::Stream(Stream::new(
+                        Dictionary::new(),
+                        encoded_bytes,
+                    )));
+                    if let Ok(page_dict) = doc.get_object_mut(page_id).and_then(Object::as_dict_mut)
+                    {
+                        page_dict.set("Contents", Object::Reference(stream_id));
+                    }
+                }
+            }
+        }
+
+        if let Some(id) = xobj_id {
+            doc.delete_object(id);
+        }
+
+        let mut output = Vec::new();
+        doc.save_to(&mut output)?;
+        *self = Self::open_from_bytes(output, self.file_path.clone())?;
+        Ok(())
+    }
+}
+
+/// Compresses a byte slice using standard Flate/Zlib algorithm.
+pub fn compress_flate(data: &[u8]) -> Result<Vec<u8>> {
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data)?;
+    Ok(encoder.finish()?)
+}
+
+/// Escapes a UTF-8 string for safe representation inside a PDF literal string literal `(...)`.
+pub fn escape_pdf_literal_string(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for c in input.chars() {
+        match c {
+            '\\' => escaped.push_str("\\\\"),
+            '(' => escaped.push_str("\\("),
+            ')' => escaped.push_str("\\)"),
+            '\r' => escaped.push_str("\\r"),
+            '\n' => escaped.push_str("\\n"),
+            _ => escaped.push(c),
+        }
+    }
+    escaped
 }
 
 /// Decodes an ASCII85 (Adobe variant) encoded byte slice.
@@ -1795,6 +2439,8 @@ fn process_content_operations(
                                                 pixel_width: final_pw,
                                                 pixel_height: final_ph,
                                                 rgba: oriented_rgba,
+                                                xobject_id: Some(xobj_id),
+                                                xobject_name: Some(name_bytes.to_vec()),
                                             });
                                         }
                                     }

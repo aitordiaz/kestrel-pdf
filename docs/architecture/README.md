@@ -14,6 +14,7 @@ This directory documents the technical architecture, design patterns, subsystem 
 | **[0004](0004-synthetic-engine-and-visual-pipeline.md)** | [Synthetic PDF Engine & Viewport Pipeline](0004-synthetic-engine-and-visual-pipeline.md) | **Accepted** | 2026-10-07 | In-memory PDF 1.7 generation, 4-quadrant coordinate rotation, and raster image blitting. |
 | **[0005](0005-ui-style-guide-and-design-system.md)** | [Modern UI Style Guide & Professional Design System](0005-ui-style-guide-and-design-system.md) | **Accepted** | 2026-10-08 | Design tokens, warm salmon & light ochre accents, primary CTA affordance, PDF 'as is' focus. |
 | **[0006](0006-ux-user-flows-and-navigation.md)** | [UX User Flows, Navigation Model & Document Interaction](0006-ux-user-flows-and-navigation.md) | **Accepted** | 2026-10-08 | In-flow Page Navigator [1]/4, distraction-free canvas, keyboard navigation matrix, primary CTA flow. |
+| **[0007](0007-in-place-editing-and-page-tree-architecture.md)** | [In-Place Content Stream Editing, Image Manipulation & Page Tree Mutations](0007-in-place-editing-and-page-tree-architecture.md) | **Accepted** | 2026-10-08 | AST operator surgery, standard Type 1 font embedding, image XObject manipulation, and page tree mutations. |
 
 
 ---
