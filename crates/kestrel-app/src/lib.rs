@@ -1,4 +1,5 @@
 pub mod app;
+pub mod icons;
 pub mod theme;
 
 pub use app::KestrelApp;
