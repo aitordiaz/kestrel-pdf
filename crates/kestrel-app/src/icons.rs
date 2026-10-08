@@ -27,8 +27,12 @@ pub const TOOL_PAN: &str = regular::HAND_PALM;
 pub const TOOL_SELECT: &str = regular::CURSOR_TEXT;
 pub const TOOL_FORMS: &str = regular::TEXTBOX;
 pub const TOOL_EDIT_TEXT: &str = regular::PENCIL_SIMPLE;
+pub const TOOL_EDIT_IMAGE: &str = regular::IMAGE;
 pub const TOOL_SIGN: &str = regular::SIGNATURE;
 pub const TOOL_REDACT: &str = regular::SHIELD;
+pub const DUPLICATE: &str = regular::COPY;
+pub const CARET_UP: &str = regular::CARET_UP;
+pub const CARET_DOWN: &str = regular::CARET_DOWN;
 
 /// Selection actions
 pub const COPY_TEXT: &str = regular::COPY;

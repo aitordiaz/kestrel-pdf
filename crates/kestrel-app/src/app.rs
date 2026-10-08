@@ -77,6 +77,13 @@ impl SelectionState {
     pub fn has_image(&self) -> bool {
         self.selected_image_index.is_some()
     }
+
+    /// Selects an embedded image on the specified page.
+    pub fn select_image(&mut self, page_index: usize, image_index: usize) {
+        self.clear();
+        self.page_index = Some(page_index);
+        self.selected_image_index = Some(image_index);
+    }
 }
 
 pub struct KestrelApp {
@@ -112,6 +119,15 @@ pub struct KestrelApp {
     pub selected_search_result: Option<usize>,
     pub scroll_to_page: Option<usize>,
     pub scroll_to_search_match: bool,
+
+    // Phase 3: In-Place Text & Image Editing State
+    pub editing_text_modal_open: bool,
+    pub editing_text_page: usize,
+    pub editing_text_run_index: Option<usize>,
+    pub editing_text_buffer: String,
+    pub editing_text_pos: egui::Pos2,
+    pub editing_text_size: f32,
+    pub editing_text_color: [u8; 3],
 }
 
 impl Default for KestrelApp {
@@ -149,6 +165,15 @@ impl Default for KestrelApp {
             last_window_title: String::new(),
             page_input_text: "1".to_string(),
             page_input_has_focus: false,
+
+            // Phase 3 editing defaults
+            editing_text_modal_open: false,
+            editing_text_page: 0,
+            editing_text_run_index: None,
+            editing_text_buffer: String::new(),
+            editing_text_pos: egui::pos2(100.0, 500.0),
+            editing_text_size: 14.0,
+            editing_text_color: [15, 23, 42],
         }
     }
 }
@@ -648,6 +673,261 @@ impl KestrelApp {
         self.selection.clear();
     }
 
+    /// Replaces the currently selected image with new RGBA pixel bytes.
+    pub fn replace_selected_image_with_rgba(
+        &mut self,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> bool {
+        if let (Some(page_idx), Some(img_idx)) = (
+            self.selection.page_index,
+            self.selection.selected_image_index,
+        ) {
+            if let Some(session) = &mut self.session {
+                if let Err(e) = session.replace_image(page_idx, img_idx, rgba, width, height) {
+                    self.status_toast = Some(format!("Error replacing image: {}", e));
+                    return false;
+                } else {
+                    self.textures.clear();
+                    self.image_textures.clear();
+                    self.status_toast =
+                        Some(format!("Image replaced with {}×{} px", width, height));
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Deletes the currently selected image from the document.
+    pub fn delete_selected_image(&mut self) -> bool {
+        if let (Some(page_idx), Some(img_idx)) = (
+            self.selection.page_index,
+            self.selection.selected_image_index,
+        ) {
+            if let Some(session) = &mut self.session {
+                if let Err(e) = session.delete_image(page_idx, img_idx) {
+                    self.status_toast = Some(format!("Error deleting image: {}", e));
+                    return false;
+                } else {
+                    self.selection.clear();
+                    self.textures.clear();
+                    self.image_textures.clear();
+                    self.status_toast = Some("Image deleted from document".to_string());
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Prompts a native file dialog to replace the selected image with a local PNG/JPG file.
+    pub fn replace_selected_image_dialog(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+            .pick_file()
+        {
+            if let Ok(bytes) = std::fs::read(&path) {
+                if let Ok(img) = image::load_from_memory(&bytes) {
+                    let rgba = img.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    self.replace_selected_image_with_rgba(&rgba.into_raw(), w, h);
+                }
+            }
+        }
+    }
+
+    /// Prompts a native file dialog to insert a new image onto the active page.
+    pub fn insert_image_dialog(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+            .pick_file()
+        {
+            if let Ok(bytes) = std::fs::read(&path) {
+                if let Ok(img) = image::load_from_memory(&bytes) {
+                    let rgba = img.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    let page_idx = self.current_page.saturating_sub(1);
+                    if let Some(session) = &mut self.session {
+                        let width_pt = 180.0_f32;
+                        let height_pt = (180.0 * h as f32 / w.max(1) as f32).clamp(40.0, 500.0);
+                        if let Err(e) = session.insert_image(
+                            page_idx,
+                            &rgba.into_raw(),
+                            w,
+                            h,
+                            100.0,
+                            400.0,
+                            width_pt,
+                            height_pt,
+                        ) {
+                            self.status_toast = Some(format!("Error inserting image: {}", e));
+                        } else {
+                            self.textures.clear();
+                            self.image_textures.clear();
+                            self.status_toast = Some("Image inserted into page".to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Inserts a blank page into the document after the current page.
+    pub fn insert_blank_page_action(&mut self) -> bool {
+        if let Some(session) = &mut self.session {
+            let at = self.current_page;
+            if let Err(e) = session.insert_blank_page(at, 595.28, 841.89) {
+                self.status_toast = Some(format!("Error inserting blank page: {}", e));
+                return false;
+            } else {
+                self.total_pages = session.page_count as usize;
+                self.textures.clear();
+                self.image_textures.clear();
+                self.set_current_page(at + 1);
+                self.status_toast = Some(format!("Inserted blank page {}", at + 1));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Deletes the current page from the document.
+    pub fn delete_current_page_action(&mut self) -> bool {
+        if self.total_pages <= 1 {
+            self.status_toast = Some("Cannot delete the only page in document".to_string());
+            return false;
+        }
+        let page_to_del = self.current_page.saturating_sub(1);
+        if let Some(session) = &mut self.session {
+            if let Err(e) = session.delete_page(page_to_del) {
+                self.status_toast = Some(format!("Error deleting page: {}", e));
+                return false;
+            } else {
+                self.total_pages = session.page_count as usize;
+                self.textures.clear();
+                self.image_textures.clear();
+                let next_p = self.current_page.min(self.total_pages).max(1);
+                self.set_current_page(next_p);
+                self.status_toast = Some(format!("Deleted page {}", page_to_del + 1));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Duplicates the current page.
+    pub fn duplicate_current_page_action(&mut self) -> bool {
+        let page_idx = self.current_page.saturating_sub(1);
+        if let Some(session) = &mut self.session {
+            if let Err(e) = session.duplicate_page(page_idx) {
+                self.status_toast = Some(format!("Error duplicating page: {}", e));
+                return false;
+            } else {
+                self.total_pages = session.page_count as usize;
+                self.textures.clear();
+                self.image_textures.clear();
+                self.set_current_page(self.current_page + 1);
+                self.status_toast = Some(format!("Duplicated page {}", page_idx + 1));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Reorders the current page up or down.
+    pub fn move_current_page_action(&mut self, up: bool) -> bool {
+        let curr = self.current_page.saturating_sub(1);
+        let target = if up {
+            if curr == 0 {
+                return false;
+            }
+            curr - 1
+        } else {
+            if curr + 1 >= self.total_pages {
+                return false;
+            }
+            curr + 1
+        };
+
+        if let Some(session) = &mut self.session {
+            if let Err(e) = session.reorder_page(curr, target) {
+                self.status_toast = Some(format!("Error reordering page: {}", e));
+                return false;
+            } else {
+                self.textures.clear();
+                self.image_textures.clear();
+                self.set_current_page(target + 1);
+                self.status_toast = Some(format!("Moved page to position {}", target + 1));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Applies changes from the text editing modal (either modifying an existing text run or inserting a new text box).
+    pub fn apply_text_edit(&mut self) -> bool {
+        if let Some(session) = &mut self.session {
+            let res = if let Some(run_idx) = self.editing_text_run_index {
+                session.modify_text_run(self.editing_text_page, run_idx, &self.editing_text_buffer)
+            } else {
+                session.insert_text_box(
+                    self.editing_text_page,
+                    &self.editing_text_buffer,
+                    self.editing_text_pos.x,
+                    self.editing_text_pos.y,
+                    self.editing_text_size,
+                    self.editing_text_color,
+                )
+            };
+
+            match res {
+                Ok(()) => {
+                    self.editing_text_modal_open = false;
+                    self.textures.clear();
+                    self.image_textures.clear();
+                    self.status_toast = Some(if self.editing_text_run_index.is_some() {
+                        "Text run updated successfully".to_string()
+                    } else {
+                        "New text box inserted successfully".to_string()
+                    });
+                    true
+                }
+                Err(e) => {
+                    self.status_toast = Some(format!("Error applying text change: {}", e));
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Deletes the text run currently being edited in the modal.
+    pub fn delete_editing_text_run(&mut self) -> bool {
+        if let (Some(session), Some(run_idx)) = (&mut self.session, self.editing_text_run_index) {
+            match session.delete_text_run(self.editing_text_page, run_idx) {
+                Ok(()) => {
+                    self.editing_text_modal_open = false;
+                    self.editing_text_run_index = None;
+                    self.textures.clear();
+                    self.image_textures.clear();
+                    self.status_toast = Some("Text run deleted successfully".to_string());
+                    true
+                }
+                Err(e) => {
+                    self.status_toast = Some(format!("Error deleting text run: {}", e));
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
     /// Selects all text runs on the currently active page.
     pub fn select_all_current_page(&mut self) {
         if self.total_pages == 0 {
@@ -1058,6 +1338,96 @@ impl KestrelApp {
                             self.active_tool = ActiveTool::EditText;
                         }
 
+                        let img_tool_label = if is_compact {
+                            crate::icons::TOOL_EDIT_IMAGE.to_string()
+                        } else if is_medium {
+                            format!("{} Image", crate::icons::TOOL_EDIT_IMAGE)
+                        } else {
+                            format!("{} Edit Image", crate::icons::TOOL_EDIT_IMAGE)
+                        };
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            self.active_tool == ActiveTool::EditImage,
+                            img_tool_label,
+                        )
+                        .on_hover_text("Select, replace, insert, or manipulate images")
+                        .clicked()
+                        {
+                            self.active_tool = ActiveTool::EditImage;
+                        }
+
+                        if self.active_tool == ActiveTool::EditText {
+                            let add_txt_label = if is_compact {
+                                crate::icons::ADD.to_string()
+                            } else {
+                                format!("{} Add Text", crate::icons::ADD)
+                            };
+                            if ui
+                                .add(
+                                    crate::theme::Theme::accent_button(add_txt_label)
+                                        .min_size(Vec2::new(0.0, 24.0)),
+                                )
+                                .on_hover_text("Insert a new text annotation onto current page")
+                                .clicked()
+                            {
+                                self.editing_text_modal_open = true;
+                                self.editing_text_page = self.current_page.saturating_sub(1);
+                                self.editing_text_run_index = None;
+                                self.editing_text_buffer = String::new();
+                                self.editing_text_pos = egui::pos2(100.0, 500.0);
+                                self.editing_text_size = 14.0;
+                                self.editing_text_color = [15, 23, 42];
+                            }
+                        }
+
+                        if self.active_tool == ActiveTool::EditImage {
+                            let insert_img_label = if is_compact {
+                                crate::icons::ADD.to_string()
+                            } else {
+                                format!("{} Insert Image", crate::icons::ADD)
+                            };
+                            if ui
+                                .add(
+                                    crate::theme::Theme::accent_button(insert_img_label)
+                                        .min_size(Vec2::new(0.0, 24.0)),
+                                )
+                                .on_hover_text("Insert an image from file onto current page")
+                                .clicked()
+                            {
+                                self.insert_image_dialog();
+                            }
+
+                            if self.selection.has_image() {
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::secondary_button(format!(
+                                            "{} Replace",
+                                            crate::icons::COPY_IMAGE
+                                        ))
+                                        .min_size(Vec2::new(0.0, 24.0)),
+                                    )
+                                    .on_hover_text("Replace selected image")
+                                    .clicked()
+                                    {
+                                        self.replace_selected_image_dialog();
+                                    }
+
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::secondary_button(format!(
+                                            "{} Delete",
+                                            crate::icons::TRASH
+                                        ))
+                                        .min_size(Vec2::new(0.0, 24.0)),
+                                    )
+                                    .on_hover_text("Delete selected image")
+                                    .clicked()
+                                    {
+                                        self.delete_selected_image();
+                                    }
+                            }
+                        }
+
                         let sign_active = self.active_tool == ActiveTool::SignContract;
                         let sign_label = if is_compact {
                             crate::icons::TOOL_SIGN.to_string()
@@ -1446,18 +1816,103 @@ impl KestrelApp {
 
                     match self.sidebar_tab {
                         SidebarTab::Thumbnails => {
+                            if self.total_pages > 0 {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add(
+                                            crate::theme::Theme::accent_button(format!(
+                                                "{} Page",
+                                                crate::icons::ADD
+                                            ))
+                                            .min_size(Vec2::new(0.0, 22.0)),
+                                        )
+                                        .on_hover_text("Insert blank page after current page")
+                                        .clicked()
+                                    {
+                                        self.insert_blank_page_action();
+                                    }
+
+                                    if ui
+                                        .add(
+                                            crate::theme::Theme::secondary_button(format!(
+                                                "{} Copy",
+                                                crate::icons::DUPLICATE
+                                            ))
+                                            .min_size(Vec2::new(0.0, 22.0)),
+                                        )
+                                        .on_hover_text("Duplicate current page")
+                                        .clicked()
+                                    {
+                                        self.duplicate_current_page_action();
+                                    }
+
+                                    if self.total_pages > 1
+                                        && ui
+                                            .add(
+                                                crate::theme::Theme::secondary_button(format!(
+                                                    "{} Del",
+                                                    crate::icons::TRASH
+                                                ))
+                                                .min_size(Vec2::new(0.0, 22.0)),
+                                            )
+                                            .on_hover_text("Delete current page")
+                                            .clicked()
+                                    {
+                                        self.delete_current_page_action();
+                                    }
+                                });
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.add_space(4.0);
+                            }
+
                             egui::ScrollArea::vertical().show(ui, |ui| {
                                 for i in 1..=self.total_pages {
                                     let is_selected = self.current_page == i;
                                     let label = format!("Page {}", i);
-                                    let btn = if is_selected {
-                                        crate::theme::Theme::primary_button(label)
-                                    } else {
-                                        crate::theme::Theme::secondary_button(label)
-                                    };
-                                    if ui.add_sized([ui.available_width(), 28.0], btn).clicked() {
-                                        self.set_current_page(i);
-                                    }
+
+                                    ui.horizontal(|ui| {
+                                        let btn = if is_selected {
+                                            crate::theme::Theme::primary_button(label)
+                                        } else {
+                                            crate::theme::Theme::secondary_button(label)
+                                        };
+                                        if ui
+                                            .add_sized([ui.available_width() - 56.0, 26.0], btn)
+                                            .clicked()
+                                        {
+                                            self.set_current_page(i);
+                                        }
+
+                                        if i > 1
+                                            && ui
+                                                .add(
+                                                    crate::theme::Theme::secondary_button(
+                                                        crate::icons::CARET_UP,
+                                                    )
+                                                    .min_size(Vec2::new(24.0, 24.0)),
+                                                )
+                                                .on_hover_text("Move page up")
+                                                .clicked()
+                                        {
+                                            self.set_current_page(i);
+                                            self.move_current_page_action(true);
+                                        }
+                                        if i < self.total_pages
+                                            && ui
+                                                .add(
+                                                    crate::theme::Theme::secondary_button(
+                                                        crate::icons::CARET_DOWN,
+                                                    )
+                                                    .min_size(Vec2::new(24.0, 24.0)),
+                                                )
+                                                .on_hover_text("Move page down")
+                                                .clicked()
+                                        {
+                                            self.set_current_page(i);
+                                            self.move_current_page_action(false);
+                                        }
+                                    });
                                     ui.add_space(2.0);
                                 }
                                 if self.total_pages == 0 {
@@ -1865,6 +2320,8 @@ impl KestrelApp {
                                 let sense = if self.active_tool == ActiveTool::SignContract
                                     || self.active_tool == ActiveTool::FormFill
                                     || self.active_tool == ActiveTool::SelectText
+                                    || self.active_tool == ActiveTool::EditText
+                                    || self.active_tool == ActiveTool::EditImage
                                 {
                                     egui::Sense::click_and_drag()
                                 } else {
@@ -2042,7 +2499,107 @@ impl KestrelApp {
                                             self.clear_selection();
                                             ui.close_menu();
                                         }
-                                    });
+                                            if self.active_tool == ActiveTool::EditImage
+                                                && self.selection.has_image()
+                                            {
+                                                if ui
+                                                    .button(format!(
+                                                        "{} Replace Image...",
+                                                        crate::icons::COPY_IMAGE
+                                                    ))
+                                                    .clicked()
+                                                {
+                                                    self.replace_selected_image_dialog();
+                                                    ui.close_menu();
+                                                }
+                                                if ui
+                                                    .button(format!(
+                                                        "{} Delete Image",
+                                                        crate::icons::TRASH
+                                                    ))
+                                                    .clicked()
+                                                {
+                                                    self.delete_selected_image();
+                                                    ui.close_menu();
+                                                }
+                                            }
+                                        });
+                                }
+
+                                // Handle clicking in EditText mode
+                                if self.active_tool == ActiveTool::EditText
+                                    && response.clicked()
+                                {
+                                    if let Some(hover_pos) = response.hover_pos() {
+                                        let pdf_scale = self.zoom_level;
+                                        let visual_x = (hover_pos.x - rect.left()) / pdf_scale;
+                                        let visual_y = (hover_pos.y - rect.top()) / pdf_scale;
+
+                                        let mut clicked_run = None;
+                                        if let Some(session) = &self.session {
+                                            if let Some(layout) = session.get_page_layout(page_idx) {
+                                                for (tr_idx, tr) in layout.text_runs.iter().enumerate() {
+                                                    let b = layout.text_run_visual_bounds(tr, page_rot);
+                                                    if visual_x >= b[0] - 2.0
+                                                        && visual_x <= b[2] + 2.0
+                                                        && visual_y >= b[1] - 2.0
+                                                        && visual_y <= b[3] + 2.0
+                                                    {
+                                                        clicked_run = Some((
+                                                            tr_idx,
+                                                            tr.text.clone(),
+                                                            tr.font_size,
+                                                            tr.color,
+                                                        ));
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if let Some((idx, text, font_size, color)) = clicked_run {
+                                            self.editing_text_modal_open = true;
+                                            self.editing_text_page = page_idx;
+                                            self.editing_text_run_index = Some(idx);
+                                            self.editing_text_buffer = text;
+                                            self.editing_text_size = font_size;
+                                            self.editing_text_color = color;
+                                        } else {
+                                            let pdf_y = (base_height / pdf_scale) - visual_y;
+                                            self.editing_text_modal_open = true;
+                                            self.editing_text_page = page_idx;
+                                            self.editing_text_run_index = None;
+                                            self.editing_text_buffer = String::new();
+                                            self.editing_text_pos = egui::pos2(visual_x, pdf_y);
+                                            self.editing_text_size = 14.0;
+                                            self.editing_text_color = [15, 23, 42];
+                                        }
+                                    }
+                                }
+
+                                // Handle clicking in EditImage mode
+                                if self.active_tool == ActiveTool::EditImage
+                                    && response.clicked()
+                                {
+                                    if let Some(hover_pos) = response.hover_pos() {
+                                        let pdf_scale = self.zoom_level;
+                                        let visual_x = (hover_pos.x - rect.left()) / pdf_scale;
+                                        let visual_y = (hover_pos.y - rect.top()) / pdf_scale;
+
+                                        if let Some(session) = &self.session {
+                                            if let Some(layout) = session.get_page_layout(page_idx) {
+                                                if let Some((img_idx, _img)) =
+                                                    layout.find_image_at_point(visual_x, visual_y, page_rot)
+                                                {
+                                                    self.selection.clear();
+                                                    self.selection.page_index = Some(page_idx);
+                                                    self.selection.selected_image_index = Some(img_idx);
+                                                } else {
+                                                    self.selection.clear();
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
 
                                 // Handle placing signature when clicking in SignContract mode
@@ -2906,6 +3463,101 @@ impl KestrelApp {
                         .clicked()
                     {
                         self.signature_modal_open = false;
+                    }
+                });
+            });
+        }
+
+        // 6. Text Editing Modal Window
+        if self.editing_text_modal_open {
+            egui::Window::new(if self.editing_text_run_index.is_some() {
+                format!("{} Edit Text Run", crate::icons::TOOL_EDIT_TEXT)
+            } else {
+                format!("{} Insert New Text Box", crate::icons::TOOL_EDIT_TEXT)
+            })
+            .collapsible(false)
+            .resizable(true)
+            .default_size(Vec2::new(420.0, 320.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Page {} — {}",
+                            self.editing_text_page + 1,
+                            if self.editing_text_run_index.is_some() {
+                                "Modify In-Place"
+                            } else {
+                                "New Text Block"
+                            }
+                        ))
+                        .color(crate::theme::Theme::TEXT_MUTED)
+                        .size(12.0),
+                    );
+                });
+                ui.add_space(8.0);
+
+                ui.label(
+                    egui::RichText::new("Text Content:")
+                        .strong()
+                        .color(crate::theme::Theme::TEXT_PRIMARY),
+                );
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.editing_text_buffer)
+                        .desired_rows(4)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Font Size:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.editing_text_size)
+                            .speed(0.5)
+                            .range(6.0..=72.0)
+                            .suffix(" pt"),
+                    );
+
+                    ui.add_space(16.0);
+                    ui.label("Color:");
+                    let mut egui_color = Color32::from_rgb(
+                        self.editing_text_color[0],
+                        self.editing_text_color[1],
+                        self.editing_text_color[2],
+                    );
+                    if ui.color_edit_button_srgba(&mut egui_color).changed() {
+                        self.editing_text_color = [egui_color.r(), egui_color.g(), egui_color.b()];
+                    }
+                });
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(crate::theme::Theme::primary_button("Apply Changes"))
+                        .clicked()
+                    {
+                        self.apply_text_edit();
+                    }
+
+                    if self.editing_text_run_index.is_some()
+                        && ui
+                            .add(crate::theme::Theme::secondary_button(format!(
+                                "{} Delete Run",
+                                crate::icons::TRASH
+                            )))
+                            .clicked()
+                    {
+                        self.delete_editing_text_run();
+                    }
+
+                    if ui
+                        .add(crate::theme::Theme::secondary_button("Cancel"))
+                        .clicked()
+                    {
+                        self.editing_text_modal_open = false;
                     }
                 });
             });

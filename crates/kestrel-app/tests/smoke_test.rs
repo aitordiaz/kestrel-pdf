@@ -2354,3 +2354,174 @@ fn test_e2e_page_navigator_viewport_scroll_and_synchronization() {
         "page_input_text must normalize to '3'"
     );
 }
+
+#[test]
+fn test_e2e_phase3_page_tree_actions() {
+    let pdf_bytes = generate_synthetic_search_corpus_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("page_tree_test.pdf".to_string()));
+    assert_eq!(app.total_pages, 3);
+    assert_eq!(app.current_page, 1);
+
+    // 1. Insert blank page
+    let inserted = app.insert_blank_page_action();
+    assert!(inserted, "insert_blank_page_action must succeed");
+    assert_eq!(app.total_pages, 4);
+    assert_eq!(app.current_page, 2);
+
+    // 2. Duplicate page
+    let duplicated = app.duplicate_current_page_action();
+    assert!(duplicated, "duplicate_current_page_action must succeed");
+    assert_eq!(app.total_pages, 5);
+    assert_eq!(app.current_page, 3);
+
+    // 3. Move page down and up
+    let moved_down = app.move_current_page_action(false);
+    assert!(moved_down, "move_current_page_action down must succeed");
+    let moved_up = app.move_current_page_action(true);
+    assert!(moved_up, "move_current_page_action up must succeed");
+
+    // 4. Delete page
+    let deleted = app.delete_current_page_action();
+    assert!(deleted, "delete_current_page_action must succeed");
+    assert_eq!(app.total_pages, 4);
+
+    // 5. Render UI frame without panicking
+    let ctx = Context::default();
+    let full_output = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    assert!(!full_output.shapes.is_empty());
+}
+
+#[test]
+fn test_e2e_phase3_text_editing_modal_and_actions() {
+    let pdf_bytes = generate_synthetic_search_corpus_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("text_edit_test.pdf".to_string()));
+
+    // 1. Switch to text edit tool
+    app.active_tool = ActiveTool::EditText;
+    assert_eq!(app.active_tool, ActiveTool::EditText);
+
+    // 2. Open modal to insert new text box
+    app.editing_text_modal_open = true;
+    app.editing_text_page = 0;
+    app.editing_text_run_index = None;
+    app.editing_text_buffer = "Phase 3 In-Place Text Insertion".to_string();
+    app.editing_text_pos = egui::pos2(120.0, 600.0);
+    app.editing_text_size = 18.0;
+    app.editing_text_color = [20, 40, 80];
+
+    // Verify modal renders in UI frame
+    let ctx = Context::default();
+    let modal_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        ..Default::default()
+    };
+    let _ = ctx.run(modal_input.clone(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let output = ctx.run(modal_input.clone(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let rendered_texts = extract_all_text_from_shapes(&output.shapes);
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("Insert New Text Box")),
+        "Modal title must be rendered in UI"
+    );
+
+    // 3. Apply insertion
+    let applied = app.apply_text_edit();
+    assert!(applied, "apply_text_edit must succeed for insertion");
+    assert!(!app.editing_text_modal_open);
+
+    // 4. Verify new text is searchable
+    app.search_query = "Phase 3 In-Place".to_string();
+    app.execute_search();
+    assert_eq!(
+        app.search_results.len(),
+        1,
+        "Inserted text must be searchable in document"
+    );
+
+    // 5. Modify existing text run
+    app.editing_text_modal_open = true;
+    app.editing_text_page = 0;
+    app.editing_text_run_index = Some(0);
+    app.editing_text_buffer = "Overwritten Header Content".to_string();
+
+    let _ = ctx.run(modal_input.clone(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let output2 = ctx.run(modal_input, |ctx| {
+        app.render_ui(ctx);
+    });
+    let rendered_texts2 = extract_all_text_from_shapes(&output2.shapes);
+    assert!(
+        rendered_texts2.iter().any(|t| t.contains("Edit Text Run")),
+        "Edit text run title must be rendered"
+    );
+
+    let modified = app.apply_text_edit();
+    assert!(modified, "apply_text_edit must succeed for modify run");
+
+    // 6. Delete a text run
+    app.editing_text_modal_open = true;
+    app.editing_text_page = 0;
+    app.editing_text_run_index = Some(0);
+    let deleted = app.delete_editing_text_run();
+    assert!(deleted, "delete_editing_text_run must succeed");
+}
+
+#[test]
+fn test_e2e_phase3_image_tool_and_manipulation() {
+    let pdf_bytes = generate_synthetic_visual_showcase_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("visual_showcase.pdf".to_string()));
+
+    // 1. Switch tool to EditImage
+    app.active_tool = ActiveTool::EditImage;
+    assert_eq!(app.active_tool, ActiveTool::EditImage);
+
+    // 2. Select first image on page 0
+    app.selection.select_image(0, 0);
+    assert_eq!(app.selection.page_index, Some(0));
+    assert_eq!(app.selection.selected_image_index, Some(0));
+
+    // 3. Replace image with a 16x16 solid green block
+    let green_pixels: Vec<u8> = [0, 255, 0, 255].repeat(16 * 16);
+    let replaced = app.replace_selected_image_with_rgba(&green_pixels, 16, 16);
+    assert!(replaced, "replace_selected_image_with_rgba must succeed");
+
+    // 4. Verify replaced image dimensions in document session
+    let session = app.session.as_ref().unwrap();
+    let layout = session.get_page_layout(0).unwrap();
+    assert_eq!(layout.images[0].pixel_width, 16);
+    assert_eq!(layout.images[0].pixel_height, 16);
+
+    // 5. Delete selected image
+    app.selection.select_image(0, 0);
+    let deleted = app.delete_selected_image();
+    assert!(deleted, "delete_selected_image must succeed");
+
+    // 6. Verify image was removed from page layout
+    let layout_after = app.session.as_ref().unwrap().get_page_layout(0).unwrap();
+    assert_eq!(
+        layout_after.images.len(),
+        0,
+        "Page 0 should have 0 images after deletion"
+    );
+
+    // 7. Verify UI frame renders cleanly after image deletion
+    let ctx = Context::default();
+    let output = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    assert!(!output.shapes.is_empty());
+}

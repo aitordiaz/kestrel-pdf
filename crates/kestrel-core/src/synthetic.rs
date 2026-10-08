@@ -87,6 +87,12 @@ impl SyntheticPdfBuilder {
         idx
     }
 
+    /// Convenience fluent builder method to append a standard page (rotation 0).
+    pub fn with_page(mut self, width_pt: f32, height_pt: f32) -> Self {
+        self.add_page(width_pt, height_pt, 0);
+        self
+    }
+
     /// Appends positioned text to the specified page.
     pub fn add_text(
         &mut self,

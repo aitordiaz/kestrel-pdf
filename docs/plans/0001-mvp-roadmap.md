@@ -8,7 +8,7 @@
 flowchart LR
     P1["Phase 1: High-Performance Reader\n(v0.1.0) ✅"] --> P2["Phase 2: Forms & Contract Signing\n(v0.2.0) ✅"]
     P2 --> H["Hardening & Synthetic Suite\n(v0.2.1 - v0.2.4) ✅"]
-    H --> P3["Phase 3: In-Place Text & Image Editing\n(v0.3.0) ⏳"]
+    H --> P3["Phase 3: In-Place Text & Image Editing\n(v0.3.0) 🚀 ACTIVE"]
     P3 --> P4["Phase 4: True Redaction & Data Sanitization\n(v0.4.0) ⏳"]
     P4 --> P5["Phase 5: Packaging & Native Porting\n(v0.5.0) ⏳"]
 ```
@@ -49,7 +49,7 @@ flowchart LR
 
 ---
 
-## Phase 3: In-Place Text & Image Editing — ⏳ UPCOMING (v0.3.0)
+## Phase 3: In-Place Text & Image Editing — ✅ COMPLETED (v0.3.0)
 > **Goal**: Enable editing text and modifying images directly inside existing PDFs without rasterizing the whole document.
 
 ### Planned Deliverables:

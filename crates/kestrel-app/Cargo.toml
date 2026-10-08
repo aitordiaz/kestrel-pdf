@@ -12,6 +12,7 @@ eframe.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+image.workspace = true
 egui-phosphor = "0.7.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

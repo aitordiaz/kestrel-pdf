@@ -1719,13 +1719,14 @@ dependencies = [
 
 [[package]]
 name = "kestrel-app"
-version = "0.2.19"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
  "eframe",
  "egui",
  "egui-phosphor",
+ "image",
  "kestrel-core",
  "lopdf",
  "rfd",
@@ -1738,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "kestrel-core"
-version = "0.2.19"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
