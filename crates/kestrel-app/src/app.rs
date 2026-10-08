@@ -543,6 +543,9 @@ impl KestrelApp {
 
     /// Renders the entire application UI layout given an egui Context.
     pub fn render_ui(&mut self, ctx: &Context) {
+        // Apply global design system visuals, dark slate palette, and component metrics
+        crate::theme::Theme::apply(ctx);
+
         // Update OS window title bar only when changed to avoid infinite repaint loops
         let current_title = self.title_bar_text();
         if self.last_window_title != current_title {
@@ -588,356 +591,537 @@ impl KestrelApp {
         }
 
         // 1. Tier 1: Application Header Bar (Branding, Primary Open CTA, Title, Save, Sidebar Toggle)
-        egui::TopBottomPanel::top("app_header").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                // Branding
-                ui.label(
-                    egui::RichText::new("🦅 Kestrel-PDF")
-                        .strong()
-                        .size(14.0)
-                        .color(crate::theme::Theme::TEXT_PRIMARY),
-                );
-                ui.separator();
-
-                // Prominent Primary Action: "Abrir fichero" Button
-                let open_btn = egui::Button::new(
-                    egui::RichText::new("📂 Abrir fichero")
-                        .color(Color32::WHITE)
-                        .strong()
-                        .size(13.0),
-                )
-                .fill(crate::theme::Theme::ACCENT_SALMON)
-                .rounding(6.0)
-                .min_size(Vec2::new(118.0, 28.0));
-
-                if ui
-                    .add(open_btn)
-                    .on_hover_text("Abrir documento PDF desde el disco (Ctrl+O / Cmd+O)")
-                    .clicked()
-                {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("PDF Documents", &["pdf"])
-                        .pick_file()
-                    {
-                        if let Ok(bytes) = std::fs::read(&path) {
-                            let name = path.file_name().map(|n| n.to_string_lossy().to_string());
-                            self.load_document_bytes(bytes, name);
-                        }
-                    }
-                }
-
-                if self.session.is_some()
-                    && ui
-                        .button("💾 Save / Export")
-                        .on_hover_text("Guardar PDF modificado en el disco")
-                        .clicked()
-                {
-                    self.save_document();
-                }
-
-                ui.separator();
-
-                // Center: Document Title Heading (with middle truncation if long and rich tooltip)
-                if let Some(name) = &self.current_file_name {
-                    let display_title = truncate_filename_middle(name, 48);
-                    ui.heading(display_title).on_hover_text(format!(
-                        "Document: {}\nTotal Pages: {}",
-                        name, self.total_pages
-                    ));
-                } else {
+        egui::TopBottomPanel::top("app_header")
+            .frame(crate::theme::Theme::header_frame())
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // Branding
                     ui.label(
-                        egui::RichText::new("Ningún documento abierto")
-                            .color(crate::theme::Theme::TEXT_MUTED)
-                            .size(13.0),
+                        egui::RichText::new("🦅 Kestrel-PDF")
+                            .strong()
+                            .size(14.0)
+                            .color(crate::theme::Theme::TEXT_PRIMARY),
                     );
-                }
+                    ui.separator();
 
-                // Right: Sidebar Toggle
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let sidebar_label = if self.sidebar_open {
-                        "◀ Cerrar panel"
-                    } else {
-                        "☰ Panel lateral"
-                    };
+                    // Prominent Primary Action: "Abrir fichero" Button
+                    let open_btn = crate::theme::Theme::primary_button("📂 Abrir fichero")
+                        .min_size(Vec2::new(120.0, 28.0));
+
                     if ui
-                        .button(sidebar_label)
-                        .on_hover_text(
-                            "Alternar panel lateral (Índice, Formularios, Capas, Búsqueda)",
-                        )
+                        .add(open_btn)
+                        .on_hover_text("Abrir documento PDF desde el disco (Ctrl+O / Cmd+O)")
                         .clicked()
                     {
-                        self.sidebar_open = !self.sidebar_open;
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("PDF Documents", &["pdf"])
+                            .pick_file()
+                        {
+                            if let Ok(bytes) = std::fs::read(&path) {
+                                let name =
+                                    path.file_name().map(|n| n.to_string_lossy().to_string());
+                                self.load_document_bytes(bytes, name);
+                            }
+                        }
                     }
-                });
-            });
-        });
 
-        // 2. Tier 2: Document Action & Navigation Ribbon
-        egui::TopBottomPanel::top("action_toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                // Group 1: In-Flow Page Navigator: [ ◀ Prev ] [ 1 ] / 4 [ Next ▶ ]
-                if self.total_pages > 0 {
-                    ui.scope(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-
-                        let prev_enabled = self.current_page > 1;
-                        let prev_btn = egui::Button::new(egui::RichText::new("◀ Prev").size(12.0))
-                            .min_size(Vec2::new(30.0, 24.0))
-                            .rounding(4.0);
+                    if self.session.is_some() {
+                        let save_btn = crate::theme::Theme::accent_button("💾 Save / Export")
+                            .min_size(Vec2::new(118.0, 28.0));
                         if ui
-                            .add_enabled(prev_enabled, prev_btn)
-                            .on_hover_text("Página anterior (Left / Up)")
+                            .add(save_btn)
+                            .on_hover_text("Guardar PDF modificado en el disco")
                             .clicked()
                         {
-                            self.set_current_page(self.current_page.saturating_sub(1));
+                            self.save_document();
                         }
+                    }
 
-                        let page_edit = egui::TextEdit::singleline(&mut self.page_input_text)
-                            .desired_width(36.0)
-                            .font(egui::TextStyle::Monospace)
-                            .horizontal_align(egui::Align::Center);
-                        let resp = ui.add(page_edit).on_hover_text(
-                            "Escribe el número de página y pulsa Enter para saltar directamente",
-                        );
+                    ui.separator();
 
-                        let enter_pressed =
-                            resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if resp.lost_focus() || enter_pressed {
-                            if let Ok(parsed) = self.page_input_text.trim().parse::<usize>() {
-                                self.set_current_page(parsed);
-                            } else {
-                                self.page_input_text = self.current_page.to_string();
-                            }
-                        } else if !resp.has_focus() {
-                            if let Ok(cur) = self.page_input_text.trim().parse::<usize>() {
-                                if cur != self.current_page {
-                                    self.page_input_text = self.current_page.to_string();
-                                }
-                            } else {
-                                self.page_input_text = self.current_page.to_string();
-                            }
-                        }
-
+                    // Center: Document Title Heading (with middle truncation if long and rich tooltip)
+                    if let Some(name) = &self.current_file_name {
+                        let display_title = truncate_filename_middle(name, 48);
                         ui.label(
-                            egui::RichText::new(format!("/ {}", self.total_pages))
-                                .color(Color32::from_rgb(148, 163, 184))
-                                .size(13.0)
-                                .strong(),
+                            egui::RichText::new(display_title)
+                                .color(crate::theme::Theme::TEXT_PRIMARY)
+                                .strong()
+                                .size(13.0),
                         )
-                        .on_hover_text(format!("Total de páginas: {}", self.total_pages));
+                        .on_hover_text(format!(
+                            "Document: {}\nTotal Pages: {}",
+                            name, self.total_pages
+                        ));
+                    } else {
+                        ui.label(
+                            egui::RichText::new("Ningún documento abierto")
+                                .color(crate::theme::Theme::TEXT_MUTED)
+                                .size(13.0),
+                        );
+                    }
 
-                        let next_enabled = self.current_page < self.total_pages;
-                        let next_btn = egui::Button::new(egui::RichText::new("Next ▶").size(12.0))
-                            .min_size(Vec2::new(30.0, 24.0))
-                            .rounding(4.0);
+                    // Right: Sidebar Toggle
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let sidebar_label = if self.sidebar_open {
+                            "◀ Cerrar panel"
+                        } else {
+                            "☰ Panel lateral"
+                        };
+                        let toggle_btn = if self.sidebar_open {
+                            crate::theme::Theme::accent_button(sidebar_label)
+                        } else {
+                            crate::theme::Theme::secondary_button(sidebar_label)
+                        };
                         if ui
-                            .add_enabled(next_enabled, next_btn)
-                            .on_hover_text("Página siguiente (Right / Down)")
+                            .add(toggle_btn)
+                            .on_hover_text(
+                                "Alternar panel lateral (Índice, Formularios, Capas, Búsqueda)",
+                            )
                             .clicked()
                         {
-                            self.set_current_page(self.current_page + 1);
+                            self.sidebar_open = !self.sidebar_open;
                         }
                     });
-                } else {
-                    ui.label(
-                        egui::RichText::new("0 / 0")
-                            .color(Color32::from_rgb(148, 163, 184))
-                            .size(12.0),
-                    );
-                }
+                });
+            });
 
-                ui.separator();
+        // 2. Tier 2: Document Action & Navigation Ribbon
+        egui::TopBottomPanel::top("action_toolbar")
+            .frame(crate::theme::Theme::ribbon_frame())
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // Group 1: In-Flow Page Navigator: [ ◀ Prev ] [ 1 ] / 4 [ Next ▶ ]
+                    if self.total_pages > 0 {
+                        crate::theme::Theme::pill_frame().show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
 
-                if ui
-                    .button("⟲")
-                    .on_hover_text("Rotate Counter-Clockwise (90°)")
-                    .clicked()
-                {
-                    self.rotate_current_page_counter_clockwise();
-                }
-                if ui
-                    .button("⟳")
-                    .on_hover_text("Rotate Clockwise (90°)")
-                    .clicked()
-                {
-                    self.rotate_current_page_clockwise();
-                }
+                            let prev_enabled = self.current_page > 1;
+                            let prev_btn = crate::theme::Theme::secondary_button("◀ Prev")
+                                .min_size(Vec2::new(32.0, 24.0));
+                            if ui
+                                .add_enabled(prev_enabled, prev_btn)
+                                .on_hover_text("Página anterior (Left / Up)")
+                                .clicked()
+                            {
+                                self.set_current_page(self.current_page.saturating_sub(1));
+                            }
 
-                ui.separator();
+                            let page_edit = egui::TextEdit::singleline(&mut self.page_input_text)
+                                .desired_width(36.0)
+                                .font(egui::TextStyle::Monospace)
+                                .horizontal_align(egui::Align::Center);
+                            let resp = ui.add(page_edit).on_hover_text(
+                                "Escribe el número de página y pulsa Enter para saltar directamente",
+                            );
+
+                            let enter_pressed =
+                                resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if resp.lost_focus() || enter_pressed {
+                                if let Ok(parsed) = self.page_input_text.trim().parse::<usize>() {
+                                    self.set_current_page(parsed);
+                                } else {
+                                    self.page_input_text = self.current_page.to_string();
+                                }
+                            } else if !resp.has_focus() {
+                                if let Ok(cur) = self.page_input_text.trim().parse::<usize>() {
+                                    if cur != self.current_page {
+                                        self.page_input_text = self.current_page.to_string();
+                                    }
+                                } else {
+                                    self.page_input_text = self.current_page.to_string();
+                                }
+                            }
+
+                            ui.label(
+                                egui::RichText::new(format!("/ {}", self.total_pages))
+                                    .color(crate::theme::Theme::TEXT_MUTED)
+                                    .size(13.0)
+                                    .strong(),
+                            )
+                            .on_hover_text(format!("Total de páginas: {}", self.total_pages));
+
+                            let next_enabled = self.current_page < self.total_pages;
+                            let next_btn = crate::theme::Theme::secondary_button("Next ▶")
+                                .min_size(Vec2::new(32.0, 24.0));
+                            if ui
+                                .add_enabled(next_enabled, next_btn)
+                                .on_hover_text("Página siguiente (Right / Down)")
+                                .clicked()
+                            {
+                                self.set_current_page(self.current_page + 1);
+                            }
+                        });
+                    } else {
+                        crate::theme::Theme::pill_frame().show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new("0 / 0")
+                                    .color(crate::theme::Theme::TEXT_MUTED)
+                                    .size(12.0),
+                            );
+                        });
+                    }
+
+                    ui.separator();
+
+                    crate::theme::Theme::pill_frame().show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
+                        if ui
+                            .add(
+                                crate::theme::Theme::secondary_button("⟲")
+                                    .min_size(Vec2::new(26.0, 24.0)),
+                            )
+                            .on_hover_text("Rotate Counter-Clockwise (90°)")
+                            .clicked()
+                        {
+                            self.rotate_current_page_counter_clockwise();
+                        }
+                        if ui
+                            .add(
+                                crate::theme::Theme::secondary_button("⟳")
+                                    .min_size(Vec2::new(26.0, 24.0)),
+                            )
+                            .on_hover_text("Rotate Clockwise (90°)")
+                            .clicked()
+                        {
+                            self.rotate_current_page_clockwise();
+                        }
+                    });
+
+                    ui.separator();
 
                 // Group 2: Segmented Tool Mode Selector (Pill style)
-                ui.selectable_value(&mut self.active_tool, ActiveTool::Pan, "✋ Pan")
-                    .on_hover_text("Pan & scroll through document");
-                ui.selectable_value(&mut self.active_tool, ActiveTool::SelectText, "📝 Select")
+                crate::theme::Theme::pill_frame().show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
+                    if crate::theme::Theme::segmented_tool_button(
+                        ui,
+                        self.active_tool == ActiveTool::Pan,
+                        "✋ Pan",
+                    )
+                    .on_hover_text("Pan & scroll through document")
+                    .clicked()
+                    {
+                        self.active_tool = ActiveTool::Pan;
+                    }
+                    if crate::theme::Theme::segmented_tool_button(
+                        ui,
+                        self.active_tool == ActiveTool::SelectText,
+                        "📝 Select",
+                    )
                     .on_hover_text(format!(
                         "Select and copy text ({}) or select all ({})",
                         standard_copy_shortcut_str(),
                         standard_select_all_shortcut_str()
-                    ));
+                    ))
+                    .clicked()
+                    {
+                        self.active_tool = ActiveTool::SelectText;
+                    }
 
-                let form_count = self.session.as_ref().map(|s| s.forms.len()).unwrap_or(0);
-                let form_label = if form_count > 0 {
-                    format!("📋 Forms ({})", form_count)
-                } else {
-                    "📋 Forms".to_string()
-                };
-                ui.selectable_value(&mut self.active_tool, ActiveTool::FormFill, form_label)
-                    .on_hover_text("Fill interactive form fields and checkboxes");
+                    let form_count = self.session.as_ref().map(|s| s.forms.len()).unwrap_or(0);
+                    let form_label = if form_count > 0 {
+                        format!("📋 Forms ({})", form_count)
+                    } else {
+                        "📋 Forms".to_string()
+                    };
+                    if crate::theme::Theme::segmented_tool_button(
+                        ui,
+                        self.active_tool == ActiveTool::FormFill,
+                        form_label,
+                    )
+                    .on_hover_text("Fill interactive form fields and checkboxes")
+                    .clicked()
+                    {
+                        self.active_tool = ActiveTool::FormFill;
+                    }
 
-                ui.selectable_value(&mut self.active_tool, ActiveTool::EditText, "✏️ Edit Text")
-                    .on_hover_text("Add or edit text annotations");
+                    if crate::theme::Theme::segmented_tool_button(
+                        ui,
+                        self.active_tool == ActiveTool::EditText,
+                        "✏️ Edit Text",
+                    )
+                    .on_hover_text("Add or edit text annotations")
+                    .clicked()
+                    {
+                        self.active_tool = ActiveTool::EditText;
+                    }
 
-                if ui
-                    .selectable_value(
-                        &mut self.active_tool,
-                        ActiveTool::SignContract,
+                    let sign_active = self.active_tool == ActiveTool::SignContract;
+                    if crate::theme::Theme::segmented_tool_button(
+                        ui,
+                        sign_active,
                         "✍️ Sign Contract",
                     )
                     .on_hover_text("Sign contract with drawn or digital signature")
                     .clicked()
-                    && self.adopted_signature.is_none()
-                {
-                    self.signature_modal_open = true;
-                }
+                    {
+                        self.active_tool = ActiveTool::SignContract;
+                        if self.adopted_signature.is_none() {
+                            self.signature_modal_open = true;
+                        }
+                    }
 
-                if self.active_tool == ActiveTool::SignContract
-                    && ui
-                        .button("🖊 Create Signature")
-                        .on_hover_text("Open Signature Pad")
-                        .clicked()
-                {
-                    self.signature_modal_open = true;
-                }
+                    if sign_active
+                        && ui
+                            .add(
+                                crate::theme::Theme::accent_button("🖊 Create Signature")
+                                    .min_size(Vec2::new(0.0, 24.0)),
+                            )
+                            .on_hover_text("Open Signature Pad")
+                            .clicked()
+                    {
+                        self.signature_modal_open = true;
+                    }
 
-                ui.selectable_value(&mut self.active_tool, ActiveTool::RedactData, "🛡️ Redact")
-                    .on_hover_text("Permanently redact sensitive document data");
+                    if crate::theme::Theme::segmented_tool_button(
+                        ui,
+                        self.active_tool == ActiveTool::RedactData,
+                        "🛡️ Redact",
+                    )
+                    .on_hover_text("Permanently redact sensitive document data")
+                    .clicked()
+                    {
+                        self.active_tool = ActiveTool::RedactData;
+                    }
+                });
 
                 // Dynamic Selection Actions
                 if !self.selection.is_empty() {
                     ui.separator();
-                    if self.selection.has_text() {
-                        let count = self
-                            .selection
-                            .selected_text
-                            .as_ref()
-                            .map(|s| s.chars().count())
-                            .unwrap_or(0);
+                    crate::theme::Theme::pill_frame().show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                        if self.selection.has_text() {
+                            let count = self
+                                .selection
+                                .selected_text
+                                .as_ref()
+                                .map(|s| s.chars().count())
+                                .unwrap_or(0);
+                            if ui
+                                .add(
+                                    crate::theme::Theme::accent_button(format!(
+                                        "📋 Copy Text ({} chars)",
+                                        count
+                                    ))
+                                    .min_size(Vec2::new(0.0, 24.0)),
+                                )
+                                .on_hover_text(format!(
+                                    "Copy selected text to clipboard ({})",
+                                    standard_copy_shortcut_str()
+                                ))
+                                .clicked()
+                            {
+                                self.copy_selected_text(ctx);
+                            }
+                        }
+                        if self.selection.has_image()
+                            && ui
+                                .add(
+                                    crate::theme::Theme::accent_button("📋 Copy Image")
+                                        .min_size(Vec2::new(0.0, 24.0)),
+                                )
+                                .on_hover_text(format!(
+                                    "Copy selected image to clipboard ({})",
+                                    standard_copy_shortcut_str()
+                                ))
+                                .clicked()
+                        {
+                            self.copy_selected_image(ctx);
+                        }
                         if ui
-                            .button(format!("📋 Copy Text ({} chars)", count))
-                            .on_hover_text(format!(
-                                "Copy selected text to clipboard ({})",
-                                standard_copy_shortcut_str()
-                            ))
+                            .add(
+                                crate::theme::Theme::secondary_button("❌ Clear")
+                                    .min_size(Vec2::new(0.0, 24.0)),
+                            )
+                            .on_hover_text("Clear active selection (Escape)")
                             .clicked()
                         {
-                            self.copy_selected_text(ctx);
+                            self.clear_selection();
                         }
-                    }
-                    if self.selection.has_image()
-                        && ui
-                            .button("📋 Copy Image")
-                            .on_hover_text(format!(
-                                "Copy selected image to clipboard ({})",
-                                standard_copy_shortcut_str()
-                            ))
-                            .clicked()
-                    {
-                        self.copy_selected_image(ctx);
-                    }
-                    if ui
-                        .button("❌ Clear")
-                        .on_hover_text("Clear active selection (Escape)")
-                        .clicked()
-                    {
-                        self.clear_selection();
-                    }
+                    });
                 }
 
                 // Group 3 & 4: Zoom Controls & Live Search (Right aligned)
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("➕").on_hover_text("Zoom In (+15%)").clicked() {
-                        self.zoom_in();
-                    }
-                    ui.label(format!("{:.0}%", self.zoom_level * 100.0))
+                    crate::theme::Theme::pill_frame().show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
+                        if ui
+                            .add(
+                                crate::theme::Theme::secondary_button("➕")
+                                    .min_size(Vec2::new(26.0, 24.0)),
+                            )
+                            .on_hover_text("Zoom In (+15%)")
+                            .clicked()
+                        {
+                            self.zoom_in();
+                        }
+                        ui.label(
+                            egui::RichText::new(format!("{:.0}%", self.zoom_level * 100.0))
+                                .color(crate::theme::Theme::TEXT_PRIMARY)
+                                .size(12.0)
+                                .strong(),
+                        )
                         .on_hover_text("Current zoom percentage");
-                    if ui.button("➖").on_hover_text("Zoom Out (-15%)").clicked() {
-                        self.zoom_out();
-                    }
-                    if ui
-                        .button("Fit Page")
-                        .on_hover_text("Fit entire page to viewport")
-                        .clicked()
-                    {
-                        self.pending_fit = Some(FitMode::FitPage);
-                    }
-                    if ui
-                        .button("Fit Width")
-                        .on_hover_text("Fit document width to viewport")
-                        .clicked()
-                    {
-                        self.pending_fit = Some(FitMode::FitWidth);
-                    }
-                    if ui
-                        .button("Reset")
-                        .on_hover_text("Reset zoom to 100%")
-                        .clicked()
-                    {
-                        self.reset_zoom();
-                    }
+                        if ui
+                            .add(
+                                crate::theme::Theme::secondary_button("➖")
+                                    .min_size(Vec2::new(26.0, 24.0)),
+                            )
+                            .on_hover_text("Zoom Out (-15%)")
+                            .clicked()
+                        {
+                            self.zoom_out();
+                        }
+                        if ui
+                            .add(
+                                crate::theme::Theme::secondary_button("Fit Page")
+                                    .min_size(Vec2::new(0.0, 24.0)),
+                            )
+                            .on_hover_text("Fit entire page to viewport")
+                            .clicked()
+                        {
+                            self.pending_fit = Some(FitMode::FitPage);
+                        }
+                        if ui
+                            .add(
+                                crate::theme::Theme::secondary_button("Fit Width")
+                                    .min_size(Vec2::new(0.0, 24.0)),
+                            )
+                            .on_hover_text("Fit document width to viewport")
+                            .clicked()
+                        {
+                            self.pending_fit = Some(FitMode::FitWidth);
+                        }
+                        if ui
+                            .add(
+                                crate::theme::Theme::secondary_button("Reset")
+                                    .min_size(Vec2::new(0.0, 24.0)),
+                            )
+                            .on_hover_text("Reset zoom to 100%")
+                            .clicked()
+                        {
+                            self.reset_zoom();
+                        }
+                    });
 
                     ui.separator();
 
                     // Search Bar
-                    if ui.button("Find").on_hover_text("Execute search").clicked() {
-                        self.execute_search();
-                    }
-                    let search_resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.search_query)
-                            .hint_text("Search…")
-                            .desired_width(110.0),
-                    );
-                    if search_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        self.execute_search();
-                    }
-                    ui.label("🔍");
+                    crate::theme::Theme::pill_frame().show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                        if ui
+                            .add(
+                                crate::theme::Theme::secondary_button("Find")
+                                    .min_size(Vec2::new(0.0, 24.0)),
+                            )
+                            .on_hover_text("Execute search")
+                            .clicked()
+                        {
+                            self.execute_search();
+                        }
+                        let search_resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.search_query)
+                                .hint_text("Search…")
+                                .desired_width(110.0),
+                        );
+                        if search_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            self.execute_search();
+                        }
+                        ui.label("🔍");
+                    });
                 });
             });
         });
 
         // 2. Status Banner / Toast
         if let Some(toast) = &self.status_toast.clone() {
-            egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(format!("ℹ {}", toast));
-                    if ui.button("✖").clicked() {
-                        self.status_toast = None;
-                    }
+            egui::TopBottomPanel::bottom("status_bar")
+                .frame(crate::theme::Theme::status_frame())
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("ℹ")
+                                .color(crate::theme::Theme::ACCENT_OCHRE)
+                                .strong()
+                                .size(14.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(toast)
+                                .color(crate::theme::Theme::TEXT_PRIMARY)
+                                .size(12.0),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    crate::theme::Theme::secondary_button("✖")
+                                        .min_size(Vec2::new(24.0, 20.0)),
+                                )
+                                .on_hover_text("Cerrar mensaje")
+                                .clicked()
+                            {
+                                self.status_toast = None;
+                            }
+                        });
+                    });
                 });
-            });
         }
 
         // 3. Left Sidebar: Thumbnails, Outlines, Forms, Search Results
         if self.sidebar_open {
             egui::SidePanel::left("left_sidebar")
+                .frame(crate::theme::Theme::header_frame())
                 .resizable(true)
-                .default_width(260.0)
+                .default_width(280.0)
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Thumbnails, "Pages");
-                        ui.selectable_value(
-                            &mut self.sidebar_tab,
-                            SidebarTab::Outlines,
+                    crate::theme::Theme::pill_frame().show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            self.sidebar_tab == SidebarTab::Thumbnails,
+                            "Pages",
+                        )
+                        .clicked()
+                        {
+                            self.sidebar_tab = SidebarTab::Thumbnails;
+                        }
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            self.sidebar_tab == SidebarTab::Outlines,
                             "Outlines",
-                        );
-                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Forms, "Forms");
-                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Layers, "Layers");
-                        ui.selectable_value(
-                            &mut self.sidebar_tab,
-                            SidebarTab::SearchResults,
+                        )
+                        .clicked()
+                        {
+                            self.sidebar_tab = SidebarTab::Outlines;
+                        }
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            self.sidebar_tab == SidebarTab::Forms,
+                            "Forms",
+                        )
+                        .clicked()
+                        {
+                            self.sidebar_tab = SidebarTab::Forms;
+                        }
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            self.sidebar_tab == SidebarTab::Layers,
+                            "Layers",
+                        )
+                        .clicked()
+                        {
+                            self.sidebar_tab = SidebarTab::Layers;
+                        }
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            self.sidebar_tab == SidebarTab::SearchResults,
                             "Search",
-                        );
+                        )
+                        .clicked()
+                        {
+                            self.sidebar_tab = SidebarTab::SearchResults;
+                        }
                     });
+                    ui.add_space(4.0);
                     ui.separator();
 
                     match self.sidebar_tab {
@@ -946,9 +1130,15 @@ impl KestrelApp {
                                 for i in 1..=self.total_pages {
                                     let is_selected = self.current_page == i;
                                     let label = format!("Page {}", i);
-                                    if ui.selectable_label(is_selected, label).clicked() {
+                                    let btn = if is_selected {
+                                        crate::theme::Theme::primary_button(label)
+                                    } else {
+                                        crate::theme::Theme::secondary_button(label)
+                                    };
+                                    if ui.add_sized([ui.available_width(), 28.0], btn).clicked() {
                                         self.current_page = i;
                                     }
+                                    ui.add_space(2.0);
                                 }
                                 if self.total_pages == 0 {
                                     ui.label("No pages loaded.");
@@ -962,10 +1152,13 @@ impl KestrelApp {
                                         ui.label("No document outlines / bookmarks.");
                                     } else {
                                         for outline in &session.outlines {
-                                            if ui.link(&outline.title).clicked() {
-                                                self.current_page =
-                                                    (outline.target_page as usize) + 1;
-                                            }
+                                            crate::theme::Theme::card_frame().show(ui, |ui| {
+                                                if ui.link(&outline.title).clicked() {
+                                                    self.current_page =
+                                                        (outline.target_page as usize) + 1;
+                                                }
+                                            });
+                                            ui.add_space(3.0);
                                         }
                                     }
                                 } else {
@@ -979,7 +1172,12 @@ impl KestrelApp {
                                     if session.forms.is_empty() {
                                         ui.label("No AcroForm fields detected.");
                                         ui.add_space(8.0);
-                                        if ui.button("➕ Add Form Field").clicked() {
+                                        if ui
+                                            .add(crate::theme::Theme::accent_button(
+                                                "➕ Add Form Field",
+                                            ))
+                                            .clicked()
+                                        {
                                             let new_field = FormField::new_text(
                                                 "custom_name",
                                                 "Full Name",
@@ -991,13 +1189,51 @@ impl KestrelApp {
                                             session.add_form_field(new_field);
                                         }
                                     } else {
-                                        ui.heading(format!("Fields ({})", session.forms.len()));
+                                        ui.horizontal(|ui| {
+                                            ui.heading(format!("Fields ({})", session.forms.len()));
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .add(crate::theme::Theme::accent_button(
+                                                            "➕ Add",
+                                                        ))
+                                                        .clicked()
+                                                    {
+                                                        let new_field = FormField::new_text(
+                                                            "custom_name",
+                                                            "Full Name",
+                                                            0,
+                                                            "",
+                                                            [72.0, 700.0, 300.0, 725.0],
+                                                            false,
+                                                        );
+                                                        session.add_form_field(new_field);
+                                                    }
+                                                },
+                                            );
+                                        });
                                         ui.separator();
 
                                         for (idx, field) in session.forms.iter_mut().enumerate() {
-                                            ui.group(|ui| {
-                                                ui.label(format!("{}. {}", idx + 1, field.name));
-                                                ui.label(format!("Page {}", field.page_index + 1));
+                                            crate::theme::Theme::card_frame().show(ui, |ui| {
+                                                ui.label(
+                                                    egui::RichText::new(format!(
+                                                        "{}. {}",
+                                                        idx + 1,
+                                                        field.name
+                                                    ))
+                                                    .color(Color32::WHITE)
+                                                    .strong(),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(format!(
+                                                        "Page {}",
+                                                        field.page_index + 1
+                                                    ))
+                                                    .color(crate::theme::Theme::TEXT_MUTED)
+                                                    .size(11.0),
+                                                );
 
                                                 match &mut field.field_type {
                                                     FormFieldType::Text { multiline, .. } => {
@@ -1070,7 +1306,10 @@ impl KestrelApp {
                                         ui.heading("Document Layers");
                                         ui.add_space(4.0);
                                         for layer in &mut session.layers {
-                                            ui.checkbox(&mut layer.visible, &layer.name);
+                                            crate::theme::Theme::card_frame().show(ui, |ui| {
+                                                ui.checkbox(&mut layer.visible, &layer.name);
+                                            });
+                                            ui.add_space(2.0);
                                         }
                                     }
                                 } else {
@@ -1083,16 +1322,31 @@ impl KestrelApp {
                                 if self.search_results.is_empty() {
                                     ui.label("No matches found.");
                                 } else {
-                                    ui.label(format!(
-                                        "Found {} matching pages:",
-                                        self.search_results.len()
-                                    ));
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "Found {} matching pages:",
+                                            self.search_results.len()
+                                        ))
+                                        .color(crate::theme::Theme::TEXT_SECONDARY),
+                                    );
+                                    ui.add_space(4.0);
                                     for res in &self.search_results {
-                                        let btn_label =
-                                            format!("Page {}: {}", res.page_index + 1, res.snippet);
-                                        if ui.button(btn_label).clicked() {
-                                            self.current_page = (res.page_index as usize) + 1;
-                                        }
+                                        crate::theme::Theme::card_frame().show(ui, |ui| {
+                                            let btn_label = format!(
+                                                "Page {}: {}",
+                                                res.page_index + 1,
+                                                res.snippet
+                                            );
+                                            if ui
+                                                .add(crate::theme::Theme::secondary_button(
+                                                    btn_label,
+                                                ))
+                                                .clicked()
+                                            {
+                                                self.current_page = (res.page_index as usize) + 1;
+                                            }
+                                        });
+                                        ui.add_space(3.0);
                                     }
                                 }
                             });
@@ -1102,7 +1356,9 @@ impl KestrelApp {
         }
 
         // 4. Central Viewport: High-Performance Continuous Page Viewer
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(crate::theme::Theme::CANVAS_BACKDROP))
+            .show(ctx, |ui| {
             if self.total_pages == 0 {
                 ui.centered_and_justified(|ui| {
                     egui::Frame::group(ui.style())
@@ -2041,20 +2297,27 @@ impl KestrelApp {
             egui::Window::new("✍️ Sign Contract — Digital & Visual Signature")
                 .collapsible(false)
                 .resizable(false)
-                .default_size(Vec2::new(440.0, 480.0))
+                .default_size(Vec2::new(460.0, 500.0))
                 .show(ctx, |ui| {
-                    ui.label("Draw your signature below using mouse or pen stylus with Bézier smoothing:");
+                    ui.label(
+                        egui::RichText::new(
+                            "Draw your signature below using mouse or pen stylus with Bézier smoothing:",
+                        )
+                        .color(crate::theme::Theme::TEXT_SECONDARY)
+                        .size(12.0),
+                    );
+                    ui.add_space(6.0);
 
-                    // Drawing Canvas Pad (400x160)
-                    let pad_size = Vec2::new(400.0, 160.0);
+                    // Drawing Canvas Pad (420x160)
+                    let pad_size = Vec2::new(420.0, 160.0);
                     let (pad_resp, pad_painter) = ui.allocate_painter(pad_size, egui::Sense::drag());
                     let pad_rect = pad_resp.rect;
 
-                    pad_painter.rect_filled(pad_rect, 4.0, Color32::from_rgb(250, 250, 252));
+                    pad_painter.rect_filled(pad_rect, 6.0, Color32::from_rgb(250, 250, 252));
                     pad_painter.rect_stroke(
                         pad_rect,
-                        4.0,
-                        egui::Stroke::new(1.5_f32, Color32::from_rgb(203, 213, 225)),
+                        6.0,
+                        egui::Stroke::new(1.5_f32, crate::theme::Theme::BORDER_DARK),
                     );
 
                     // Track drag points into current stroke
@@ -2095,7 +2358,7 @@ impl KestrelApp {
                                     egui::pos2(pad_rect.left() + p1.x, pad_rect.top() + p1.y),
                                     egui::pos2(pad_rect.left() + p2.x, pad_rect.top() + p2.y),
                                 ],
-                                egui::Stroke::new(2.2_f32, ink_color),
+                                egui::Stroke::new(2.4_f32, ink_color),
                             );
                         }
                     }
@@ -2107,47 +2370,86 @@ impl KestrelApp {
                                 egui::pos2(pad_rect.left() + p1.x, pad_rect.top() + p1.y),
                                 egui::pos2(pad_rect.left() + p2.x, pad_rect.top() + p2.y),
                             ],
-                            egui::Stroke::new(2.2_f32, ink_color),
+                            egui::Stroke::new(2.4_f32, ink_color),
                         );
                     }
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        ui.label("Ink Color:");
+                        ui.label(
+                            egui::RichText::new("Ink Color:")
+                                .color(crate::theme::Theme::TEXT_SECONDARY),
+                        );
                         ui.radio_value(&mut self.signature_blue_ink, true, "Royal Blue");
                         ui.radio_value(&mut self.signature_blue_ink, false, "Deep Slate");
 
                         ui.separator();
-                        if ui.button("🗑 Clear Pad").clicked() {
+                        if ui
+                            .add(crate::theme::Theme::secondary_button("🗑 Clear Pad"))
+                            .clicked()
+                        {
                             self.signature_pad_raw_strokes.clear();
                             self.signature_pad_current_stroke.clear();
                         }
-                        if ui.button("↩ Undo").clicked() {
+                        if ui
+                            .add(crate::theme::Theme::secondary_button("↩ Undo"))
+                            .clicked()
+                        {
                             self.signature_pad_raw_strokes.pop();
                         }
                     });
 
+                    ui.add_space(6.0);
                     ui.separator();
-                    ui.heading("🔒 Cryptographic PAdES Metadata");
-                    ui.checkbox(&mut self.embed_digital_signature, "Embed PAdES Digital Signature (SHA-256 Digest)");
+                    ui.add_space(6.0);
 
-                    if self.embed_digital_signature {
-                        ui.horizontal(|ui| {
-                            ui.label("Signer Name:");
-                            ui.text_edit_singleline(&mut self.signer_name_input);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Reason:");
-                            ui.text_edit_singleline(&mut self.signature_reason_input);
-                        });
-                    }
+                    crate::theme::Theme::card_frame().show(ui, |ui| {
+                        ui.heading(
+                            egui::RichText::new("🔒 Cryptographic PAdES Metadata")
+                                .color(Color32::WHITE)
+                                .size(14.0),
+                        );
+                        ui.add_space(4.0);
+                        ui.checkbox(
+                            &mut self.embed_digital_signature,
+                            "Embed PAdES Digital Signature (SHA-256 Digest)",
+                        );
 
+                        if self.embed_digital_signature {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Signer Name:")
+                                        .color(crate::theme::Theme::TEXT_SECONDARY),
+                                );
+                                ui.text_edit_singleline(&mut self.signer_name_input);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Reason:")
+                                        .color(crate::theme::Theme::TEXT_SECONDARY),
+                                );
+                                ui.text_edit_singleline(&mut self.signature_reason_input);
+                            });
+                        }
+                    });
+
+                    ui.add_space(10.0);
                     ui.separator();
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        if ui.button("✅ Adopt & Place Signature").clicked() {
+                        if ui
+                            .add(crate::theme::Theme::primary_button(
+                                "✅ Adopt & Place Signature",
+                            ))
+                            .clicked()
+                        {
                             self.adopt_signature_from_pad();
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui
+                            .add(crate::theme::Theme::secondary_button("Cancel"))
+                            .clicked()
+                        {
                             self.signature_modal_open = false;
                         }
                     });

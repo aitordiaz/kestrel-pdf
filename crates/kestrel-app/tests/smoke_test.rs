@@ -1660,3 +1660,99 @@ fn test_e2e_page_navigator_text_input_jump_and_steppers() {
         "Navigator denominator must remain '/ 4'"
     );
 }
+
+#[test]
+fn test_e2e_modern_design_system_tokens_and_visual_consistency() {
+    use kestrel_app::Theme;
+
+    let mut app = KestrelApp::default();
+    let ctx = Context::default();
+
+    // 1. Empty state frame: Check warm salmon CTA and slate dark panels
+    let empty_out = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    assert!(
+        has_rect_with_fill(&empty_out.shapes, Theme::ACCENT_SALMON),
+        "Empty state must render large Warm Salmon (#D97757) Open File CTA"
+    );
+    assert!(
+        has_rect_with_fill(&empty_out.shapes, Theme::PANEL_DARK),
+        "Header must render Slate 900 (#0F172A) panel fill"
+    );
+
+    // 2. Loaded document state: Check Ribbon, Actions, and Canvas
+    let pdf_bytes = generate_synthetic_visual_showcase_pdf();
+    app.load_document_bytes(pdf_bytes, Some("modern_theme_doc.pdf".to_string()));
+    let loaded_out = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    assert!(
+        has_rect_with_fill(&loaded_out.shapes, Theme::ACCENT_SALMON),
+        "Loaded toolbar must contain Warm Salmon accent for active tool / primary button"
+    );
+    assert!(
+        has_rect_with_fill(&loaded_out.shapes, Theme::ACCENT_OCHRE),
+        "Header must contain Warm Ochre accent for Save / Export button"
+    );
+    assert!(
+        has_rect_with_fill(&loaded_out.shapes, Theme::CANVAS_BACKDROP),
+        "Central panel must render Slate 700 canvas backdrop surround"
+    );
+
+    // 3. Status Toast Notification: Check status bar presence
+    app.status_toast = Some("Document loaded successfully with 4 pages.".to_string());
+    let toast_out = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let toast_texts = extract_all_text_from_shapes(&toast_out.shapes);
+    assert!(
+        toast_texts
+            .iter()
+            .any(|t| t.contains("Document loaded successfully")),
+        "Toast message must be rendered"
+    );
+    assert!(
+        toast_texts.iter().any(|t| t.contains("ℹ")),
+        "Toast must render information badge icon"
+    );
+
+    // 4. Left Sidebar: Open and cycle tabs, checking themed cards
+    app.sidebar_open = true;
+    app.sidebar_tab = SidebarTab::Thumbnails;
+    let sidebar_out = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let sidebar_texts = extract_all_text_from_shapes(&sidebar_out.shapes);
+    assert!(
+        sidebar_texts.iter().any(|t| t.contains("Page 1")),
+        "Thumbnails sidebar tab must render page items"
+    );
+
+    // 5. Signature Modal: Open and verify themed action buttons
+    app.signature_modal_open = true;
+    let modal_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        ..Default::default()
+    };
+    let _ = ctx.run(modal_input.clone(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let modal_out = ctx.run(modal_input, |ctx| {
+        app.render_ui(ctx);
+    });
+    let modal_texts = extract_all_text_from_shapes(&modal_out.shapes);
+    assert!(
+        modal_texts.iter().any(|t| t.contains("Sign Contract")),
+        "Signature modal window title must be rendered"
+    );
+    assert!(
+        modal_texts
+            .iter()
+            .any(|t| t.contains("Adopt & Place Signature")),
+        "Adopt button must be present in signature modal"
+    );
+}
