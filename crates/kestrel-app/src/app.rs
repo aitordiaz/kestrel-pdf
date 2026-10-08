@@ -107,6 +107,7 @@ pub struct KestrelApp {
     pub embed_digital_signature: bool,
     pub status_toast: Option<String>,
     pub last_window_title: String,
+    pub page_input_text: String,
 }
 
 impl Default for KestrelApp {
@@ -119,8 +120,8 @@ impl Default for KestrelApp {
             zoom_level: 1.0,
             pending_fit: None,
             active_tool: ActiveTool::Pan,
-            sidebar_open: true,
-            sidebar_tab: SidebarTab::Thumbnails,
+            sidebar_open: false,
+            sidebar_tab: SidebarTab::Outlines,
             search_query: String::new(),
             search_results: Vec::new(),
             pipeline: Arc::new(RenderPipeline::new(128)),
@@ -139,6 +140,7 @@ impl Default for KestrelApp {
             embed_digital_signature: true,
             status_toast: None,
             last_window_title: String::new(),
+            page_input_text: "1".to_string(),
         }
     }
 }
@@ -232,11 +234,25 @@ impl KestrelApp {
             None => "Kestrel-PDF".to_string(),
         }
     }
+    /// Safely updates the current page index and synchronizes the input buffer.
+    pub fn set_current_page(&mut self, page: usize) {
+        if self.total_pages > 0 {
+            self.current_page = page.clamp(1, self.total_pages);
+        } else {
+            self.current_page = 0;
+        }
+        self.page_input_text = if self.current_page > 0 {
+            self.current_page.to_string()
+        } else {
+            "0".to_string()
+        };
+    }
+
     /// Loads a PDF from raw byte buffer (desktop or WASM).
     pub fn load_document_bytes(&mut self, bytes: Vec<u8>, name: Option<String>) {
         if let Ok(session) = DocumentSession::open_from_bytes(bytes, None) {
             self.total_pages = session.page_count as usize;
-            self.current_page = if self.total_pages > 0 { 1 } else { 0 };
+            self.set_current_page(if self.total_pages > 0 { 1 } else { 0 });
             self.current_file_name = name;
             self.textures.clear();
             self.image_textures.clear();
@@ -311,6 +327,7 @@ impl KestrelApp {
             self.search_results = session.search_text(&self.search_query);
             if !self.search_results.is_empty() {
                 self.sidebar_tab = SidebarTab::SearchResults;
+                self.sidebar_open = true;
             }
         }
     }
@@ -539,7 +556,23 @@ impl KestrelApp {
         // Handle global keyboard shortcuts when text input fields (search bar, text forms) do NOT have focus
         let text_edit_focused = ctx.wants_keyboard_input();
         if !text_edit_focused {
-            if ctx.input(is_copy_shortcut_pressed) {
+            let is_cmd_or_ctrl =
+                ctx.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.mac_cmd);
+            if is_cmd_or_ctrl
+                && !ctx.input(|i| i.modifiers.shift)
+                && ctx.input(|i| i.key_pressed(egui::Key::O))
+            {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("PDF Documents", &["pdf"])
+                    .pick_file()
+                {
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        let name = path.file_name().map(|n| n.to_string_lossy().to_string());
+                        self.load_document_bytes(bytes, name);
+                    }
+                }
+            } else if ctx.input(is_copy_shortcut_pressed) {
                 if self.selection.has_text() {
                     self.copy_selected_text(ctx);
                 } else if self.selection.has_image() {
@@ -554,68 +587,87 @@ impl KestrelApp {
             }
         }
 
-        // 1. Tier 1: Application Header Bar (Branding, Sidebar Toggle, Document Title, File Operations)
+        // 1. Tier 1: Application Header Bar (Branding, Primary Open CTA, Title, Save, Sidebar Toggle)
         egui::TopBottomPanel::top("app_header").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // Left: Sidebar Toggle & Branding
-                let sidebar_label = if self.sidebar_open {
-                    "◀ Sidebar"
-                } else {
-                    "▶ Sidebar"
-                };
-                if ui
-                    .button(sidebar_label)
-                    .on_hover_text(
-                        "Toggle document sidebar (Thumbnails, Outlines, Forms, Layers, Search)",
-                    )
-                    .clicked()
-                {
-                    self.sidebar_open = !self.sidebar_open;
-                }
-
-                ui.label(egui::RichText::new("🦅 Kestrel-PDF").strong());
+                // Branding
+                ui.label(
+                    egui::RichText::new("🦅 Kestrel-PDF")
+                        .strong()
+                        .size(14.0)
+                        .color(crate::theme::Theme::TEXT_PRIMARY),
+                );
                 ui.separator();
 
-                // Right: File Action Buttons
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.session.is_some()
-                        && ui
-                            .button("💾 Save / Export")
-                            .on_hover_text("Save modified PDF to disk")
-                            .clicked()
-                    {
-                        self.save_document();
-                    }
+                // Prominent Primary Action: "Abrir fichero" Button
+                let open_btn = egui::Button::new(
+                    egui::RichText::new("📂 Abrir fichero")
+                        .color(Color32::WHITE)
+                        .strong()
+                        .size(13.0),
+                )
+                .fill(crate::theme::Theme::ACCENT_SALMON)
+                .rounding(6.0)
+                .min_size(Vec2::new(118.0, 28.0));
 
-                    if ui
-                        .button("📂 Open File")
-                        .on_hover_text("Open PDF document from disk")
-                        .clicked()
+                if ui
+                    .add(open_btn)
+                    .on_hover_text("Abrir documento PDF desde el disco (Ctrl+O / Cmd+O)")
+                    .clicked()
+                {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("PDF Documents", &["pdf"])
+                        .pick_file()
                     {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("PDF Documents", &["pdf"])
-                            .pick_file()
-                        {
-                            if let Ok(bytes) = std::fs::read(&path) {
-                                let name =
-                                    path.file_name().map(|n| n.to_string_lossy().to_string());
-                                self.load_document_bytes(bytes, name);
-                            }
+                        if let Ok(bytes) = std::fs::read(&path) {
+                            let name = path.file_name().map(|n| n.to_string_lossy().to_string());
+                            self.load_document_bytes(bytes, name);
                         }
                     }
+                }
 
-                    ui.separator();
+                if self.session.is_some()
+                    && ui
+                        .button("💾 Save / Export")
+                        .on_hover_text("Guardar PDF modificado en el disco")
+                        .clicked()
+                {
+                    self.save_document();
+                }
 
-                    // Center: Document Title Heading (with middle truncation if long and rich tooltip)
-                    if let Some(name) = &self.current_file_name {
-                        let display_title = truncate_filename_middle(name, 48);
-                        ui.heading(display_title).on_hover_text(format!(
-                            "Document: {}\nTotal Pages: {}",
-                            name, self.total_pages
-                        ));
+                ui.separator();
+
+                // Center: Document Title Heading (with middle truncation if long and rich tooltip)
+                if let Some(name) = &self.current_file_name {
+                    let display_title = truncate_filename_middle(name, 48);
+                    ui.heading(display_title).on_hover_text(format!(
+                        "Document: {}\nTotal Pages: {}",
+                        name, self.total_pages
+                    ));
+                } else {
+                    ui.label(
+                        egui::RichText::new("Ningún documento abierto")
+                            .color(crate::theme::Theme::TEXT_MUTED)
+                            .size(13.0),
+                    );
+                }
+
+                // Right: Sidebar Toggle
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let sidebar_label = if self.sidebar_open {
+                        "◀ Cerrar panel"
                     } else {
-                        ui.heading("No document open");
+                        "☰ Panel lateral"
+                    };
+                    if ui
+                        .button(sidebar_label)
+                        .on_hover_text(
+                            "Alternar panel lateral (Índice, Formularios, Capas, Búsqueda)",
+                        )
+                        .clicked()
+                    {
+                        self.sidebar_open = !self.sidebar_open;
                     }
                 });
             });
@@ -624,22 +676,75 @@ impl KestrelApp {
         // 2. Tier 2: Document Action & Navigation Ribbon
         egui::TopBottomPanel::top("action_toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // Group 1: Page Navigation & Orientation
+                // Group 1: In-Flow Page Navigator: [ ◀ Prev ] [ 1 ] / 4 [ Next ▶ ]
                 if self.total_pages > 0 {
-                    if ui.button("⬅ Prev").on_hover_text("Previous Page").clicked()
-                        && self.current_page > 1
-                    {
-                        self.current_page -= 1;
-                    }
-                    ui.label(format!("Page {} / {}", self.current_page, self.total_pages))
-                        .on_hover_text("Current page / Total pages");
-                    if ui.button("Next ➡").on_hover_text("Next Page").clicked()
-                        && self.current_page < self.total_pages
-                    {
-                        self.current_page += 1;
-                    }
+                    ui.scope(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+
+                        let prev_enabled = self.current_page > 1;
+                        let prev_btn = egui::Button::new(egui::RichText::new("◀ Prev").size(12.0))
+                            .min_size(Vec2::new(30.0, 24.0))
+                            .rounding(4.0);
+                        if ui
+                            .add_enabled(prev_enabled, prev_btn)
+                            .on_hover_text("Página anterior (Left / Up)")
+                            .clicked()
+                        {
+                            self.set_current_page(self.current_page.saturating_sub(1));
+                        }
+
+                        let page_edit = egui::TextEdit::singleline(&mut self.page_input_text)
+                            .desired_width(36.0)
+                            .font(egui::TextStyle::Monospace)
+                            .horizontal_align(egui::Align::Center);
+                        let resp = ui.add(page_edit).on_hover_text(
+                            "Escribe el número de página y pulsa Enter para saltar directamente",
+                        );
+
+                        let enter_pressed =
+                            resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if resp.lost_focus() || enter_pressed {
+                            if let Ok(parsed) = self.page_input_text.trim().parse::<usize>() {
+                                self.set_current_page(parsed);
+                            } else {
+                                self.page_input_text = self.current_page.to_string();
+                            }
+                        } else if !resp.has_focus() {
+                            if let Ok(cur) = self.page_input_text.trim().parse::<usize>() {
+                                if cur != self.current_page {
+                                    self.page_input_text = self.current_page.to_string();
+                                }
+                            } else {
+                                self.page_input_text = self.current_page.to_string();
+                            }
+                        }
+
+                        ui.label(
+                            egui::RichText::new(format!("/ {}", self.total_pages))
+                                .color(Color32::from_rgb(148, 163, 184))
+                                .size(13.0)
+                                .strong(),
+                        )
+                        .on_hover_text(format!("Total de páginas: {}", self.total_pages));
+
+                        let next_enabled = self.current_page < self.total_pages;
+                        let next_btn = egui::Button::new(egui::RichText::new("Next ▶").size(12.0))
+                            .min_size(Vec2::new(30.0, 24.0))
+                            .rounding(4.0);
+                        if ui
+                            .add_enabled(next_enabled, next_btn)
+                            .on_hover_text("Página siguiente (Right / Down)")
+                            .clicked()
+                        {
+                            self.set_current_page(self.current_page + 1);
+                        }
+                    });
                 } else {
-                    ui.label("Page 0 / 0");
+                    ui.label(
+                        egui::RichText::new("0 / 0")
+                            .color(Color32::from_rgb(148, 163, 184))
+                            .size(12.0),
+                    );
                 }
 
                 ui.separator();
@@ -1000,27 +1105,70 @@ impl KestrelApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.total_pages == 0 {
                 ui.centered_and_justified(|ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.heading("Welcome to Kestrel-PDF");
-                        ui.add_space(8.0);
-                        ui.label(
-                            "Instantaneous, high-performance universal PDF reader and editor.",
-                        );
-                        ui.add_space(16.0);
-                        if ui.button("📂 Choose a PDF to open").clicked() {
-                            #[cfg(not(target_arch = "wasm32"))]
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("PDF Documents", &["pdf"])
-                                .pick_file()
-                            {
-                                if let Ok(bytes) = std::fs::read(&path) {
-                                    let name =
-                                        path.file_name().map(|n| n.to_string_lossy().to_string());
-                                    self.load_document_bytes(bytes, name);
+                    egui::Frame::group(ui.style())
+                        .fill(crate::theme::Theme::PANEL_SURFACE)
+                        .stroke(egui::Stroke::new(1.0_f32, crate::theme::Theme::BORDER_DARK))
+                        .rounding(12.0)
+                        .inner_margin(egui::Margin::same(36.0))
+                        .show(ui, |ui| {
+                            ui.set_max_width(440.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(egui::RichText::new("🦅").size(48.0));
+                                ui.add_space(8.0);
+                                ui.heading(
+                                    egui::RichText::new("Kestrel-PDF")
+                                        .color(Color32::WHITE)
+                                        .strong()
+                                        .size(22.0),
+                                );
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Lector y editor de PDF universal de ultra-alto rendimiento",
+                                    )
+                                    .color(crate::theme::Theme::TEXT_MUTED)
+                                    .size(13.0),
+                                );
+                                ui.add_space(28.0);
+
+                                let big_open_btn = egui::Button::new(
+                                    egui::RichText::new("📂  Abrir fichero PDF")
+                                        .color(Color32::WHITE)
+                                        .strong()
+                                        .size(15.0),
+                                )
+                                .fill(crate::theme::Theme::ACCENT_SALMON)
+                                .rounding(8.0)
+                                .min_size(Vec2::new(220.0, 42.0));
+
+                                if ui
+                                    .add(big_open_btn)
+                                    .on_hover_text(
+                                        "Selecciona un documento PDF para abrir (Ctrl+O / Cmd+O)",
+                                    )
+                                    .clicked()
+                                {
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    if let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("PDF Documents", &["pdf"])
+                                        .pick_file()
+                                    {
+                                        if let Ok(bytes) = std::fs::read(&path) {
+                                            let name =
+                                                path.file_name().map(|n| n.to_string_lossy().to_string());
+                                            self.load_document_bytes(bytes, name);
+                                        }
+                                    }
                                 }
-                            }
-                        }
-                    });
+
+                                ui.add_space(12.0);
+                                ui.label(
+                                    egui::RichText::new("o arrastra y suelta tu archivo PDF aquí")
+                                        .color(Color32::from_rgb(100, 116, 139))
+                                        .size(12.0),
+                                );
+                            });
+                        });
                 });
             } else {
                 // Apply pending Fit Width / Fit Page if requested

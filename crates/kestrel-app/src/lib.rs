@@ -1,6 +1,8 @@
 pub mod app;
+pub mod theme;
 
 pub use app::KestrelApp;
+pub use theme::Theme;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
