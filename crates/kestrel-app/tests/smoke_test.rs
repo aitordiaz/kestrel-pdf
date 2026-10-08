@@ -1915,3 +1915,135 @@ fn test_e2e_phosphor_icon_font_glyphs_and_typography() {
         );
     }
 }
+
+#[test]
+fn test_e2e_responsive_toolbar_modes_at_different_viewport_widths() {
+    let mut app = KestrelApp::default();
+    let doc_bytes = generate_synthetic_visual_showcase_pdf();
+    let test_filename = "enterprise_quarterly_financial_report_audit_signed.pdf";
+    app.load_document_bytes(doc_bytes, Some(test_filename.to_string()));
+
+    // 1. Wide Viewport (1400px width): Full labels rendered
+    let ctx_wide = egui::Context::default();
+    let wide_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1400.0, 900.0),
+        )),
+        ..Default::default()
+    };
+    let wide_out = ctx_wide.run(wide_input, |ctx| {
+        app.render_ui(ctx);
+    });
+    let wide_texts = extract_all_text_from_shapes(&wide_out.shapes);
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Prev")),
+        "Wide viewport must render 'Prev' in page navigator"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Next")),
+        "Wide viewport must render 'Next' in page navigator"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Sign Contract")),
+        "Wide viewport must render 'Sign Contract' in tool ribbon"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Fit Page")),
+        "Wide viewport must render 'Fit Page' in zoom cluster"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Fit Width")),
+        "Wide viewport must render 'Fit Width' in zoom cluster"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Abrir fichero")),
+        "Wide viewport must render 'Abrir fichero' in header CTA"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Save / Export")),
+        "Wide viewport must render 'Save / Export' in header CTA"
+    );
+
+    // 2. Medium Viewport (900px width): Compact labels rendered
+    let ctx_med = egui::Context::default();
+    let med_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(900.0, 700.0),
+        )),
+        ..Default::default()
+    };
+    let med_out = ctx_med.run(med_input, |ctx| {
+        app.render_ui(ctx);
+    });
+    let med_texts = extract_all_text_from_shapes(&med_out.shapes);
+    assert!(
+        med_texts.iter().any(|t| t.contains("Sign")),
+        "Medium viewport must render 'Sign' in tool ribbon"
+    );
+    assert!(
+        med_texts.iter().any(|t| t.contains("Fit")),
+        "Medium viewport must render 'Fit' in zoom cluster"
+    );
+
+    // 3. Compact / Half-Screen Viewport (680px width): Iconic mode rendered
+    let ctx_compact = egui::Context::default();
+    let compact_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(680.0, 600.0),
+        )),
+        ..Default::default()
+    };
+    let compact_out = ctx_compact.run(compact_input, |ctx| {
+        app.render_ui(ctx);
+    });
+    let compact_texts = extract_all_text_from_shapes(&compact_out.shapes);
+
+    // All tool icons must be present even in compact mode
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_PAN)),
+        "Compact viewport must render TOOL_PAN icon"
+    );
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_SELECT)),
+        "Compact viewport must render TOOL_SELECT icon"
+    );
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_SIGN)),
+        "Compact viewport must render TOOL_SIGN icon"
+    );
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_FORMS)),
+        "Compact viewport must render TOOL_FORMS icon"
+    );
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_EDIT_TEXT)),
+        "Compact viewport must render TOOL_EDIT_TEXT icon"
+    );
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_REDACT)),
+        "Compact viewport must render TOOL_REDACT icon"
+    );
+    assert!(
+        compact_texts.iter().any(|t| t.contains("Abrir")),
+        "Compact viewport must render compact 'Abrir' CTA"
+    );
+    assert!(
+        compact_texts.iter().any(|t| t.contains("Save")),
+        "Compact viewport must render compact 'Save' CTA"
+    );
+}

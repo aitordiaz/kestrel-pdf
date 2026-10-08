@@ -596,6 +596,10 @@ impl KestrelApp {
         egui::TopBottomPanel::top("app_header")
             .frame(crate::theme::Theme::header_frame())
             .show(ctx, |ui| {
+                let header_w = ui.available_width();
+                let is_header_compact = header_w < 820.0;
+                let is_header_tiny = header_w < 640.0;
+
                 ui.horizontal(|ui| {
                     // Branding
                     ui.label(
@@ -604,14 +608,17 @@ impl KestrelApp {
                             .size(15.0)
                             .color(crate::theme::Theme::TEXT_PRIMARY),
                     );
-                    ui.separator();
+                    crate::theme::Theme::vertical_divider(ui);
 
-                    // Prominent Primary Action: "Abrir fichero" Button
-                    let open_btn = crate::theme::Theme::primary_button(format!(
-                        "{} Abrir fichero",
-                        crate::icons::OPEN_FILE
-                    ))
-                    .min_size(Vec2::new(128.0, 28.0));
+                    // Prominent Primary Action: "Abrir fichero" Button (Responsive & comfortable)
+                    let open_text = if is_header_compact {
+                        format!("{} Abrir", crate::icons::OPEN_FILE)
+                    } else {
+                        format!("{} Abrir fichero", crate::icons::OPEN_FILE)
+                    };
+                    let open_min_w = if is_header_compact { 0.0 } else { 120.0 };
+                    let open_btn = crate::theme::Theme::primary_button(open_text)
+                        .min_size(Vec2::new(open_min_w, 28.0));
 
                     if ui
                         .add(open_btn)
@@ -632,11 +639,14 @@ impl KestrelApp {
                     }
 
                     if self.session.is_some() {
-                        let save_btn = crate::theme::Theme::accent_button(format!(
-                            "{} Save / Export",
-                            crate::icons::SAVE_FILE
-                        ))
-                        .min_size(Vec2::new(124.0, 28.0));
+                        let save_text = if is_header_compact {
+                            format!("{} Save", crate::icons::SAVE_FILE)
+                        } else {
+                            format!("{} Save / Export", crate::icons::SAVE_FILE)
+                        };
+                        let save_min_w = if is_header_compact { 0.0 } else { 110.0 };
+                        let save_btn = crate::theme::Theme::accent_button(save_text)
+                            .min_size(Vec2::new(save_min_w, 28.0));
                         if ui
                             .add(save_btn)
                             .on_hover_text("Guardar PDF modificado en el disco")
@@ -646,11 +656,18 @@ impl KestrelApp {
                         }
                     }
 
-                    ui.separator();
+                    crate::theme::Theme::vertical_divider(ui);
 
-                    // Center: Document Title Heading (with middle truncation if long and rich tooltip)
+                    // Center: Document Title Heading (with dynamic middle truncation according to width)
                     if let Some(name) = &self.current_file_name {
-                        let display_title = truncate_filename_middle(name, 48);
+                        let max_len = if is_header_tiny {
+                            20
+                        } else if is_header_compact {
+                            32
+                        } else {
+                            48
+                        };
+                        let display_title = truncate_filename_middle(name, max_len);
                         ui.label(
                             egui::RichText::new(display_title)
                                 .color(crate::theme::Theme::TEXT_PRIMARY)
@@ -671,7 +688,9 @@ impl KestrelApp {
 
                     // Right: Sidebar Toggle
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let sidebar_label = if self.sidebar_open {
+                        let sidebar_label = if is_header_compact {
+                            crate::icons::SIDEBAR.to_string()
+                        } else if self.sidebar_open {
                             format!("{} Cerrar panel", crate::icons::SIDEBAR)
                         } else {
                             format!("{} Panel lateral", crate::icons::SIDEBAR)
@@ -698,18 +717,25 @@ impl KestrelApp {
         egui::TopBottomPanel::top("action_toolbar")
             .frame(crate::theme::Theme::ribbon_frame())
             .show(ctx, |ui| {
+                let avail_w = ui.available_width();
+                let is_wide = avail_w >= 1050.0;
+                let is_medium = (780.0..1050.0).contains(&avail_w);
+                let is_compact = avail_w < 780.0;
+
                 ui.horizontal(|ui| {
                     // Group 1: In-Flow Page Navigator: [ < Prev ] [ 1 ] / 4 [ Next > ]
                     if self.total_pages > 0 {
                         crate::theme::Theme::pill_frame().show(ui, |ui| {
-                            ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+                            ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
 
                             let prev_enabled = self.current_page > 1;
-                            let prev_btn = crate::theme::Theme::secondary_button(format!(
-                                "{} Prev",
-                                crate::icons::PREV_PAGE
-                            ))
-                            .min_size(Vec2::new(32.0, 24.0));
+                            let prev_label = if is_wide {
+                                format!("{} Prev", crate::icons::PREV_PAGE)
+                            } else {
+                                crate::icons::PREV_PAGE.to_string()
+                            };
+                            let prev_btn = crate::theme::Theme::secondary_button(prev_label)
+                                .min_size(Vec2::new(if is_wide { 32.0 } else { 22.0 }, 24.0));
                             if ui
                                 .add_enabled(prev_enabled, prev_btn)
                                 .on_hover_text("Página anterior (Left / Up)")
@@ -718,8 +744,9 @@ impl KestrelApp {
                                 self.set_current_page(self.current_page.saturating_sub(1));
                             }
 
+                            let page_box_w = if is_compact { 30.0 } else { 36.0 };
                             let page_edit = egui::TextEdit::singleline(&mut self.page_input_text)
-                                .desired_width(36.0)
+                                .desired_width(page_box_w)
                                 .font(egui::TextStyle::Monospace)
                                 .horizontal_align(egui::Align::Center);
                             let resp = ui.add(page_edit).on_hover_text(
@@ -753,11 +780,13 @@ impl KestrelApp {
                             .on_hover_text(format!("Total de páginas: {}", self.total_pages));
 
                             let next_enabled = self.current_page < self.total_pages;
-                            let next_btn = crate::theme::Theme::secondary_button(format!(
-                                "Next {}",
-                                crate::icons::NEXT_PAGE
-                            ))
-                            .min_size(Vec2::new(32.0, 24.0));
+                            let next_label = if is_wide {
+                                format!("Next {}", crate::icons::NEXT_PAGE)
+                            } else {
+                                crate::icons::NEXT_PAGE.to_string()
+                            };
+                            let next_btn = crate::theme::Theme::secondary_button(next_label)
+                                .min_size(Vec2::new(if is_wide { 32.0 } else { 22.0 }, 24.0));
                             if ui
                                 .add_enabled(next_enabled, next_btn)
                                 .on_hover_text("Página siguiente (Right / Down)")
@@ -776,14 +805,15 @@ impl KestrelApp {
                         });
                     }
 
-                    ui.separator();
+                    crate::theme::Theme::vertical_divider(ui);
 
+                    // Page Rotations
                     crate::theme::Theme::pill_frame().show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
+                        ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
                         if ui
                             .add(
                                 crate::theme::Theme::secondary_button(crate::icons::ROTATE_CCW)
-                                    .min_size(Vec2::new(26.0, 24.0)),
+                                    .min_size(Vec2::new(24.0, 24.0)),
                             )
                             .on_hover_text("Rotate Counter-Clockwise (90°)")
                             .clicked()
@@ -793,7 +823,7 @@ impl KestrelApp {
                         if ui
                             .add(
                                 crate::theme::Theme::secondary_button(crate::icons::ROTATE_CW)
-                                    .min_size(Vec2::new(26.0, 24.0)),
+                                    .min_size(Vec2::new(24.0, 24.0)),
                             )
                             .on_hover_text("Rotate Clockwise (90°)")
                             .clicked()
@@ -802,263 +832,348 @@ impl KestrelApp {
                         }
                     });
 
-                    ui.separator();
+                    crate::theme::Theme::vertical_divider(ui);
 
-                // Group 2: Segmented Tool Mode Selector (Pill style)
-                crate::theme::Theme::pill_frame().show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
-                    if crate::theme::Theme::segmented_tool_button(
-                        ui,
-                        self.active_tool == ActiveTool::Pan,
-                        format!("{} Pan", crate::icons::TOOL_PAN),
-                    )
-                    .on_hover_text("Pan & scroll through document")
-                    .clicked()
-                    {
-                        self.active_tool = ActiveTool::Pan;
-                    }
-                    if crate::theme::Theme::segmented_tool_button(
-                        ui,
-                        self.active_tool == ActiveTool::SelectText,
-                        format!("{} Select", crate::icons::TOOL_SELECT),
-                    )
-                    .on_hover_text(format!(
-                        "Select and copy text ({}) or select all ({})",
-                        standard_copy_shortcut_str(),
-                        standard_select_all_shortcut_str()
-                    ))
-                    .clicked()
-                    {
-                        self.active_tool = ActiveTool::SelectText;
-                    }
-
-                    let form_count = self.session.as_ref().map(|s| s.forms.len()).unwrap_or(0);
-                    let form_label = if form_count > 0 {
-                        format!("{} Forms ({})", crate::icons::TOOL_FORMS, form_count)
-                    } else {
-                        format!("{} Forms", crate::icons::TOOL_FORMS)
-                    };
-                    if crate::theme::Theme::segmented_tool_button(
-                        ui,
-                        self.active_tool == ActiveTool::FormFill,
-                        form_label,
-                    )
-                    .on_hover_text("Fill interactive form fields and checkboxes")
-                    .clicked()
-                    {
-                        self.active_tool = ActiveTool::FormFill;
-                    }
-
-                    if crate::theme::Theme::segmented_tool_button(
-                        ui,
-                        self.active_tool == ActiveTool::EditText,
-                        format!("{} Edit Text", crate::icons::TOOL_EDIT_TEXT),
-                    )
-                    .on_hover_text("Add or edit text annotations")
-                    .clicked()
-                    {
-                        self.active_tool = ActiveTool::EditText;
-                    }
-
-                    let sign_active = self.active_tool == ActiveTool::SignContract;
-                    if crate::theme::Theme::segmented_tool_button(
-                        ui,
-                        sign_active,
-                        format!("{} Sign Contract", crate::icons::TOOL_SIGN),
-                    )
-                    .on_hover_text("Sign contract with drawn or digital signature")
-                    .clicked()
-                    {
-                        self.active_tool = ActiveTool::SignContract;
-                        if self.adopted_signature.is_none() {
-                            self.signature_modal_open = true;
-                        }
-                    }
-
-                    if sign_active
-                        && ui
-                            .add(
-                                crate::theme::Theme::accent_button(format!(
-                                    "{} Create Signature",
-                                    crate::icons::TOOL_SIGN
-                                ))
-                                .min_size(Vec2::new(0.0, 24.0)),
-                            )
-                            .on_hover_text("Open Signature Pad")
-                            .clicked()
-                    {
-                        self.signature_modal_open = true;
-                    }
-
-                    if crate::theme::Theme::segmented_tool_button(
-                        ui,
-                        self.active_tool == ActiveTool::RedactData,
-                        format!("{} Redact", crate::icons::TOOL_REDACT),
-                    )
-                    .on_hover_text("Permanently redact sensitive document data")
-                    .clicked()
-                    {
-                        self.active_tool = ActiveTool::RedactData;
-                    }
-                });
-
-                // Dynamic Selection Actions
-                if !self.selection.is_empty() {
-                    ui.separator();
+                    // Group 2: Segmented Tool Mode Selector (Pill style)
                     crate::theme::Theme::pill_frame().show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-                        if self.selection.has_text() {
-                            let count = self
-                                .selection
-                                .selected_text
-                                .as_ref()
-                                .map(|s| s.chars().count())
-                                .unwrap_or(0);
+                        ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
+
+                        let pan_label = if is_compact {
+                            crate::icons::TOOL_PAN.to_string()
+                        } else {
+                            format!("{} Pan", crate::icons::TOOL_PAN)
+                        };
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            self.active_tool == ActiveTool::Pan,
+                            pan_label,
+                        )
+                        .on_hover_text("Pan & scroll through document (Space + Drag)")
+                        .clicked()
+                        {
+                            self.active_tool = ActiveTool::Pan;
+                        }
+
+                        let select_label = if is_compact {
+                            crate::icons::TOOL_SELECT.to_string()
+                        } else {
+                            format!("{} Select", crate::icons::TOOL_SELECT)
+                        };
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            self.active_tool == ActiveTool::SelectText,
+                            select_label,
+                        )
+                        .on_hover_text(format!(
+                            "Select and copy text ({}) or select all ({})",
+                            standard_copy_shortcut_str(),
+                            standard_select_all_shortcut_str()
+                        ))
+                        .clicked()
+                        {
+                            self.active_tool = ActiveTool::SelectText;
+                        }
+
+                        let form_count = self.session.as_ref().map(|s| s.forms.len()).unwrap_or(0);
+                        let form_label = if is_compact {
+                            crate::icons::TOOL_FORMS.to_string()
+                        } else if is_wide && form_count > 0 {
+                            format!("{} Forms ({})", crate::icons::TOOL_FORMS, form_count)
+                        } else {
+                            format!("{} Forms", crate::icons::TOOL_FORMS)
+                        };
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            self.active_tool == ActiveTool::FormFill,
+                            form_label,
+                        )
+                        .on_hover_text("Fill interactive form fields and checkboxes")
+                        .clicked()
+                        {
+                            self.active_tool = ActiveTool::FormFill;
+                        }
+
+                        let edit_label = if is_compact {
+                            crate::icons::TOOL_EDIT_TEXT.to_string()
+                        } else if is_medium {
+                            format!("{} Edit", crate::icons::TOOL_EDIT_TEXT)
+                        } else {
+                            format!("{} Edit Text", crate::icons::TOOL_EDIT_TEXT)
+                        };
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            self.active_tool == ActiveTool::EditText,
+                            edit_label,
+                        )
+                        .on_hover_text("Add or edit text annotations")
+                        .clicked()
+                        {
+                            self.active_tool = ActiveTool::EditText;
+                        }
+
+                        let sign_active = self.active_tool == ActiveTool::SignContract;
+                        let sign_label = if is_compact {
+                            crate::icons::TOOL_SIGN.to_string()
+                        } else if is_medium {
+                            format!("{} Sign", crate::icons::TOOL_SIGN)
+                        } else {
+                            format!("{} Sign Contract", crate::icons::TOOL_SIGN)
+                        };
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            sign_active,
+                            sign_label,
+                        )
+                        .on_hover_text("Sign contract with drawn or digital signature")
+                        .clicked()
+                        {
+                            self.active_tool = ActiveTool::SignContract;
+                            if self.adopted_signature.is_none() {
+                                self.signature_modal_open = true;
+                            }
+                        }
+
+                        if sign_active {
+                            let create_sig_label = if is_compact {
+                                crate::icons::TOOL_SIGN.to_string()
+                            } else {
+                                format!("{} Create Signature", crate::icons::TOOL_SIGN)
+                            };
                             if ui
                                 .add(
-                                    crate::theme::Theme::accent_button(format!(
-                                        "{} Copy Text ({} chars)",
-                                        crate::icons::COPY_TEXT,
-                                        count
-                                    ))
-                                    .min_size(Vec2::new(0.0, 24.0)),
+                                    crate::theme::Theme::accent_button(create_sig_label)
+                                        .min_size(Vec2::new(0.0, 24.0)),
                                 )
-                                .on_hover_text(format!(
-                                    "Copy selected text to clipboard ({})",
-                                    standard_copy_shortcut_str()
-                                ))
+                                .on_hover_text("Open Signature Pad")
                                 .clicked()
                             {
-                                self.copy_selected_text(ctx);
+                                self.signature_modal_open = true;
                             }
                         }
-                        if self.selection.has_image()
-                            && ui
-                                .add(
-                                    crate::theme::Theme::accent_button(format!(
-                                        "{} Copy Image",
-                                        crate::icons::COPY_IMAGE
-                                    ))
-                                    .min_size(Vec2::new(0.0, 24.0)),
-                                )
-                                .on_hover_text(format!(
-                                    "Copy selected image to clipboard ({})",
-                                    standard_copy_shortcut_str()
-                                ))
-                                .clicked()
-                            {
-                                self.copy_selected_image(ctx);
-                            }
-                        if ui
-                            .add(
-                                crate::theme::Theme::secondary_button(format!(
-                                    "{} Clear",
-                                    crate::icons::CLOSE
-                                ))
-                                .min_size(Vec2::new(0.0, 24.0)),
-                            )
-                            .on_hover_text("Clear active selection (Escape)")
-                            .clicked()
-                        {
-                            self.clear_selection();
-                        }
-                    });
-                }
 
-                // Group 3 & 4: Zoom Controls & Live Search (Right aligned)
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    crate::theme::Theme::pill_frame().show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
-                        if ui
-                            .add(
-                                crate::theme::Theme::secondary_button(crate::icons::ZOOM_IN)
-                                    .min_size(Vec2::new(26.0, 24.0)),
-                            )
-                            .on_hover_text("Zoom In (+15%)")
-                            .clicked()
-                        {
-                            self.zoom_in();
-                        }
-                        ui.label(
-                            egui::RichText::new(format!("{:.0}%", self.zoom_level * 100.0))
-                                .color(crate::theme::Theme::TEXT_PRIMARY)
-                                .size(12.0)
-                                .strong(),
+                        let redact_label = if is_compact {
+                            crate::icons::TOOL_REDACT.to_string()
+                        } else {
+                            format!("{} Redact", crate::icons::TOOL_REDACT)
+                        };
+                        if crate::theme::Theme::segmented_tool_button(
+                            ui,
+                            self.active_tool == ActiveTool::RedactData,
+                            redact_label,
                         )
-                        .on_hover_text("Current zoom percentage");
-                        if ui
-                            .add(
-                                crate::theme::Theme::secondary_button(crate::icons::ZOOM_OUT)
-                                    .min_size(Vec2::new(26.0, 24.0)),
-                            )
-                            .on_hover_text("Zoom Out (-15%)")
-                            .clicked()
+                        .on_hover_text("Permanently redact sensitive document data")
+                        .clicked()
                         {
-                            self.zoom_out();
-                        }
-                        if ui
-                            .add(
-                                crate::theme::Theme::secondary_button("Fit Page")
-                                    .min_size(Vec2::new(0.0, 24.0)),
-                            )
-                            .on_hover_text("Fit entire page to viewport")
-                            .clicked()
-                        {
-                            self.pending_fit = Some(FitMode::FitPage);
-                        }
-                        if ui
-                            .add(
-                                crate::theme::Theme::secondary_button("Fit Width")
-                                    .min_size(Vec2::new(0.0, 24.0)),
-                            )
-                            .on_hover_text("Fit document width to viewport")
-                            .clicked()
-                        {
-                            self.pending_fit = Some(FitMode::FitWidth);
-                        }
-                        if ui
-                            .add(
-                                crate::theme::Theme::secondary_button("Reset")
-                                    .min_size(Vec2::new(0.0, 24.0)),
-                            )
-                            .on_hover_text("Reset zoom to 100%")
-                            .clicked()
-                        {
-                            self.reset_zoom();
+                            self.active_tool = ActiveTool::RedactData;
                         }
                     });
 
-                    ui.separator();
+                    // Dynamic Selection Actions
+                    if !self.selection.is_empty() {
+                        crate::theme::Theme::vertical_divider(ui);
+                        crate::theme::Theme::pill_frame().show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
+                            if self.selection.has_text() {
+                                let count = self
+                                    .selection
+                                    .selected_text
+                                    .as_ref()
+                                    .map(|s| s.chars().count())
+                                    .unwrap_or(0);
+                                let copy_text_label = if is_compact {
+                                    format!("{} Copy", crate::icons::COPY_TEXT)
+                                } else {
+                                    format!("{} Copy Text ({} chars)", crate::icons::COPY_TEXT, count)
+                                };
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::accent_button(copy_text_label)
+                                            .min_size(Vec2::new(0.0, 24.0)),
+                                    )
+                                    .on_hover_text(format!(
+                                        "Copy selected text to clipboard ({})",
+                                        standard_copy_shortcut_str()
+                                    ))
+                                    .clicked()
+                                {
+                                    self.copy_selected_text(ctx);
+                                }
+                            }
+                            if self.selection.has_image() {
+                                let copy_img_label = if is_compact {
+                                    format!("{} Img", crate::icons::COPY_IMAGE)
+                                } else {
+                                    format!("{} Copy Image", crate::icons::COPY_IMAGE)
+                                };
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::accent_button(copy_img_label)
+                                            .min_size(Vec2::new(0.0, 24.0)),
+                                    )
+                                    .on_hover_text(format!(
+                                        "Copy selected image to clipboard ({})",
+                                        standard_copy_shortcut_str()
+                                    ))
+                                    .clicked()
+                                {
+                                    self.copy_selected_image(ctx);
+                                }
+                            }
+                            if ui
+                                .add(
+                                    crate::theme::Theme::secondary_button(format!(
+                                        "{} Clear",
+                                        crate::icons::CLOSE
+                                    ))
+                                    .min_size(Vec2::new(0.0, 24.0)),
+                                )
+                                .on_hover_text("Clear active selection (Escape)")
+                                .clicked()
+                            {
+                                self.clear_selection();
+                            }
+                        });
+                    }
 
-                    // Search Bar
-                    crate::theme::Theme::pill_frame().show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
-                        if ui
-                            .add(
-                                crate::theme::Theme::secondary_button(format!(
-                                    "{} Find",
-                                    crate::icons::SEARCH
-                                ))
-                                .min_size(Vec2::new(0.0, 24.0)),
+                    // Group 3 & 4: Zoom Controls & Live Search (Right aligned)
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        crate::theme::Theme::pill_frame().show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
+                            if ui
+                                .add(
+                                    crate::theme::Theme::secondary_button(crate::icons::ZOOM_IN)
+                                        .min_size(Vec2::new(24.0, 24.0)),
+                                )
+                                .on_hover_text("Zoom In (+15%)")
+                                .clicked()
+                            {
+                                self.zoom_in();
+                            }
+                            ui.label(
+                                egui::RichText::new(format!("{:.0}%", self.zoom_level * 100.0))
+                                    .color(crate::theme::Theme::TEXT_PRIMARY)
+                                    .size(12.0)
+                                    .strong(),
                             )
-                            .on_hover_text("Execute search")
-                            .clicked()
-                        {
-                            self.execute_search();
-                        }
-                        let search_resp = ui.add(
-                            egui::TextEdit::singleline(&mut self.search_query)
-                                .hint_text("Search…")
-                                .desired_width(110.0),
-                        );
-                        if search_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            self.execute_search();
-                        }
-                        ui.label(crate::icons::SEARCH);
+                            .on_hover_text("Current zoom percentage");
+                            if ui
+                                .add(
+                                    crate::theme::Theme::secondary_button(crate::icons::ZOOM_OUT)
+                                        .min_size(Vec2::new(24.0, 24.0)),
+                                )
+                                .on_hover_text("Zoom Out (-15%)")
+                                .clicked()
+                            {
+                                self.zoom_out();
+                            }
+
+                            if is_wide {
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::secondary_button("Fit Page")
+                                            .min_size(Vec2::new(0.0, 24.0)),
+                                    )
+                                    .on_hover_text("Fit entire page to viewport")
+                                    .clicked()
+                                {
+                                    self.pending_fit = Some(FitMode::FitPage);
+                                }
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::secondary_button("Fit Width")
+                                            .min_size(Vec2::new(0.0, 24.0)),
+                                    )
+                                    .on_hover_text("Fit document width to viewport")
+                                    .clicked()
+                                {
+                                    self.pending_fit = Some(FitMode::FitWidth);
+                                }
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::secondary_button("Reset")
+                                            .min_size(Vec2::new(0.0, 24.0)),
+                                    )
+                                    .on_hover_text("Reset zoom to 100%")
+                                    .clicked()
+                                {
+                                    self.reset_zoom();
+                                }
+                            } else if is_medium {
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::secondary_button("Fit")
+                                            .min_size(Vec2::new(0.0, 24.0)),
+                                    )
+                                    .on_hover_text("Fit page width to viewport")
+                                    .clicked()
+                                {
+                                    self.pending_fit = Some(FitMode::FitWidth);
+                                }
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::secondary_button("Reset")
+                                            .min_size(Vec2::new(0.0, 24.0)),
+                                    )
+                                    .on_hover_text("Reset zoom to 100%")
+                                    .clicked()
+                                {
+                                    self.reset_zoom();
+                                }
+                            } else {
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::secondary_button("Fit")
+                                            .min_size(Vec2::new(0.0, 24.0)),
+                                    )
+                                    .on_hover_text("Fit page width to viewport")
+                                    .clicked()
+                                {
+                                    self.pending_fit = Some(FitMode::FitWidth);
+                                }
+                            }
+                        });
+
+                        crate::theme::Theme::vertical_divider(ui);
+
+                        // Search Bar
+                        crate::theme::Theme::pill_frame().show(ui, |ui| {
+                            ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
+                            let find_label = if is_compact {
+                                crate::icons::SEARCH.to_string()
+                            } else {
+                                format!("{} Find", crate::icons::SEARCH)
+                            };
+                            if ui
+                                .add(
+                                    crate::theme::Theme::secondary_button(find_label)
+                                        .min_size(Vec2::new(0.0, 24.0)),
+                                )
+                                .on_hover_text("Execute search")
+                                .clicked()
+                            {
+                                self.execute_search();
+                            }
+                            let search_w = if is_compact {
+                                65.0
+                            } else if is_medium {
+                                90.0
+                            } else {
+                                110.0
+                            };
+                            let search_resp = ui.add(
+                                egui::TextEdit::singleline(&mut self.search_query)
+                                    .desired_width(search_w)
+                                    .hint_text("Search…"),
+                            );
+                            if search_resp.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            {
+                                self.execute_search();
+                            }
+                        });
                     });
                 });
             });
-        });
 
         // 2. Status Banner / Toast
         if let Some(toast) = &self.status_toast.clone() {

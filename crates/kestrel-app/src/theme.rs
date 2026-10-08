@@ -84,43 +84,44 @@ impl Theme {
         visuals.widgets.noninteractive.bg_fill = Self::PANEL_DARK;
         visuals.widgets.noninteractive.weak_bg_fill = Self::PANEL_DARK;
         visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, Self::TEXT_PRIMARY);
-        visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, Self::BORDER_DARK);
+        visuals.widgets.noninteractive.bg_stroke = Stroke::NONE;
         visuals.widgets.noninteractive.rounding = Rounding::same(6.0);
 
-        // Inactive widgets (buttons, checkboxes, unselected tabs in idle state)
-        visuals.widgets.inactive.bg_fill = Self::PANEL_SURFACE;
-        visuals.widgets.inactive.weak_bg_fill = Self::PANEL_SURFACE;
+        // Inactive widgets (buttons, checkboxes, unselected tabs in idle state) - borderless & airy
+        visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(30, 41, 59, 140);
+        visuals.widgets.inactive.weak_bg_fill = Color32::from_rgba_unmultiplied(30, 41, 59, 140);
         visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, Self::TEXT_PRIMARY);
-        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Self::BORDER_DARK);
+        visuals.widgets.inactive.bg_stroke = Stroke::NONE;
         visuals.widgets.inactive.rounding = Rounding::same(6.0);
 
-        // Hovered widgets (interactive hover feedback with ochre border)
+        // Hovered widgets (interactive hover feedback with soft ochre border)
         visuals.widgets.hovered.bg_fill = Self::PANEL_SURFACE_HOVER;
         visuals.widgets.hovered.weak_bg_fill = Self::PANEL_SURFACE_HOVER;
         visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, Color32::WHITE);
-        visuals.widgets.hovered.bg_stroke = Stroke::new(1.2_f32, Self::ACCENT_OCHRE);
+        visuals.widgets.hovered.bg_stroke =
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(226, 135, 67, 180));
         visuals.widgets.hovered.rounding = Rounding::same(6.0);
 
         // Active widgets (pressed state, checked checkboxes, active selection with salmon fill)
         visuals.widgets.active.bg_fill = Self::ACCENT_SALMON;
         visuals.widgets.active.weak_bg_fill = Self::ACCENT_SALMON;
         visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, Color32::WHITE);
-        visuals.widgets.active.bg_stroke = Stroke::new(1.5_f32, Self::ACCENT_SALMON_ACTIVE);
+        visuals.widgets.active.bg_stroke = Stroke::NONE;
         visuals.widgets.active.rounding = Rounding::same(6.0);
 
         // Open widgets (open dropdown menus, active combo popups)
         visuals.widgets.open.bg_fill = Self::PANEL_SURFACE;
         visuals.widgets.open.weak_bg_fill = Self::PANEL_SURFACE;
         visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, Color32::WHITE);
-        visuals.widgets.open.bg_stroke = Stroke::new(1.2_f32, Self::ACCENT_OCHRE);
+        visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, Self::ACCENT_OCHRE);
         visuals.widgets.open.rounding = Rounding::same(6.0);
 
         ctx.set_visuals(visuals);
 
-        // Global spacing and margins
+        // Global spacing and margins - comfortable breathing room
         ctx.style_mut(|style| {
-            style.spacing.button_padding = Vec2::new(9.0, 5.0);
-            style.spacing.item_spacing = Vec2::new(6.0, 6.0);
+            style.spacing.button_padding = Vec2::new(8.0, 5.0);
+            style.spacing.item_spacing = Vec2::new(4.0, 4.0);
             style.spacing.window_margin = egui::Margin::same(12.0);
         });
     }
@@ -138,17 +139,30 @@ impl Theme {
         .min_size(Vec2::new(0.0, 28.0))
     }
 
-    /// Secondary button constructor (Slate 800 background, Slate 700 border, crisp text).
+    /// Secondary button constructor (Borderless slate surface, soft hover feedback, crisp text).
     pub fn secondary_button(text: impl Into<String>) -> egui::Button<'static> {
         egui::Button::new(
             RichText::new(text.into())
                 .color(Self::TEXT_PRIMARY)
                 .size(12.0),
         )
-        .fill(Self::PANEL_SURFACE)
-        .stroke(Stroke::new(1.0_f32, Self::BORDER_DARK))
+        .fill(Color32::from_rgba_unmultiplied(30, 41, 59, 140))
+        .stroke(Stroke::NONE)
         .rounding(Rounding::same(6.0))
         .min_size(Vec2::new(0.0, 26.0))
+    }
+
+    /// Borderless ghost button constructor (Transparent background, soft hover).
+    pub fn ghost_button(text: impl Into<String>) -> egui::Button<'static> {
+        egui::Button::new(
+            RichText::new(text.into())
+                .color(Self::TEXT_PRIMARY)
+                .size(12.0),
+        )
+        .fill(Color32::TRANSPARENT)
+        .stroke(Stroke::NONE)
+        .rounding(Rounding::same(6.0))
+        .min_size(Vec2::new(0.0, 24.0))
     }
 
     /// Accent button constructor (Warm Ochre background, bold white text).
@@ -160,6 +174,7 @@ impl Theme {
                 .size(12.0),
         )
         .fill(Self::ACCENT_OCHRE)
+        .stroke(Stroke::NONE)
         .rounding(Rounding::same(6.0))
         .min_size(Vec2::new(0.0, 28.0))
     }
@@ -173,6 +188,7 @@ impl Theme {
                 .size(12.0),
         )
         .fill(Color32::from_rgb(185, 28, 28)) // Red 700
+        .stroke(Stroke::NONE)
         .rounding(Rounding::same(6.0))
         .min_size(Vec2::new(0.0, 26.0))
     }
@@ -180,17 +196,20 @@ impl Theme {
     /// Frame container for pill-shaped tool clusters, page navigators, and search groups.
     pub fn pill_frame() -> egui::Frame {
         egui::Frame::none()
-            .fill(Self::PANEL_DARK)
-            .stroke(Stroke::new(1.0_f32, Self::BORDER_DARK))
-            .rounding(Rounding::same(8.0))
-            .inner_margin(egui::Margin::symmetric(6.0, 3.0))
+            .fill(Color32::from_rgba_unmultiplied(15, 23, 42, 190))
+            .stroke(Stroke::NONE)
+            .rounding(Rounding::same(7.0))
+            .inner_margin(egui::Margin::symmetric(4.0, 2.0))
     }
 
     /// Frame container for content cards, form groups, and sidebar items.
     pub fn card_frame() -> egui::Frame {
         egui::Frame::none()
             .fill(Self::PANEL_SURFACE)
-            .stroke(Stroke::new(1.0_f32, Self::BORDER_DARK))
+            .stroke(Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(51, 65, 85, 120),
+            ))
             .rounding(Rounding::same(8.0))
             .inner_margin(egui::Margin::same(10.0))
     }
@@ -199,44 +218,52 @@ impl Theme {
     pub fn header_frame() -> egui::Frame {
         egui::Frame::none()
             .fill(Self::PANEL_DARK)
-            .stroke(Stroke::new(1.0_f32, Self::BORDER_DARK))
-            .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+            .stroke(Stroke::NONE)
+            .inner_margin(egui::Margin::symmetric(12.0, 7.0))
     }
 
-    /// Frame container for Tier 2 Action ribbon.
+    /// Frame container for Tier 2 Action ribbon (subtle soft bottom divider line).
     pub fn ribbon_frame() -> egui::Frame {
         egui::Frame::none()
             .fill(Self::PANEL_SURFACE)
-            .stroke(Stroke::new(1.0_f32, Self::BORDER_DARK))
-            .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+            .stroke(Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(51, 65, 85, 90),
+            ))
+            .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+    }
+
+    /// Render a subtle, low-opacity vertical divider between toolbar control clusters.
+    pub fn vertical_divider(ui: &mut egui::Ui) {
+        ui.add_space(2.0);
+        let height = 18.0;
+        let (rect, _resp) = ui.allocate_exact_size(Vec2::new(1.0, height), egui::Sense::hover());
+        ui.painter().vline(
+            rect.center().x,
+            rect.y_range(),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(148, 163, 184, 45)),
+        );
+        ui.add_space(2.0);
     }
 
     /// Frame container for bottom status bar.
     pub fn status_frame() -> egui::Frame {
         egui::Frame::none()
             .fill(Self::PANEL_DARK)
-            .stroke(Stroke::new(1.0_f32, Self::BORDER_DARK))
+            .stroke(Stroke::NONE)
             .inner_margin(egui::Margin::symmetric(12.0, 6.0))
     }
 
-    /// Segmented tool button helper (Active: solid Salmon; Inactive: Slate panel with border).
+    /// Segmented tool button helper (Active: solid Salmon; Inactive: clean borderless icon/label).
     pub fn segmented_tool_button(
         ui: &mut egui::Ui,
         is_active: bool,
         label: impl Into<String>,
     ) -> egui::Response {
         let (bg, stroke, text_color) = if is_active {
-            (
-                Self::ACCENT_SALMON,
-                Stroke::new(1.5_f32, Self::ACCENT_SALMON_ACTIVE),
-                Color32::WHITE,
-            )
+            (Self::ACCENT_SALMON, Stroke::NONE, Color32::WHITE)
         } else {
-            (
-                Self::PANEL_DARK,
-                Stroke::new(1.0_f32, Self::BORDER_DARK),
-                Self::TEXT_PRIMARY,
-            )
+            (Color32::TRANSPARENT, Stroke::NONE, Self::TEXT_PRIMARY)
         };
 
         let btn = egui::Button::new(RichText::new(label.into()).color(text_color).size(12.0))

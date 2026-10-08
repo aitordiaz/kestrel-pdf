@@ -17,17 +17,26 @@ This skill guides agents and engineers in developing, styling, and refining the 
    - Primary Accent: Warm Salmon (`#D97757` / `Color32::from_rgb(217, 119, 87)`).
    - Secondary Accent: Light Ochre / Warm Amber (`#E28743` / `Color32::from_rgb(226, 135, 67)`).
    - Base Panels: Neutral Deep Slate (`#0F172A` / `#1E293B`).
-   - High Contrast Borders: Slate 700 (`#334155`).
+   - Subtle Low-Contrast Dividers: Alpha-blended Slate (`Color32::from_rgba_unmultiplied(148, 163, 184, 45)`). Avoid heavy 1px borders around every element.
    - Text: Crisp White (`#F8FAFC`) on dark surfaces; high contrast at all times.
-2. **Prominent Primary Actions ("Abrir Fichero")**:
-   - The primary call-to-action button (Opening a file) must always be large, comfortable, and immediately discoverable.
+2. **Borderless & Airy Ergonomics ("Breathing Room")**:
+   - Secondary and tool buttons are borderless (`Stroke::NONE`) by default with subtle transparent fills and soft hover glows.
+   - Never cage buttons inside multiple nested borders ("box inside a box inside a box").
+   - Discrete 18px vertical dividers replace harsh full-height separators.
+3. **Adaptive Responsive Layout (100% Non-Fullscreen Usability)**:
+   - Toolbars and headers must adapt dynamically based on `ui.available_width()`:
+     - **Wide (`>= 1050px`)**: Full icon + descriptive label for all controls.
+     - **Medium (`780px .. 1050px`)**: Shortened labels and compact caret navigators.
+     - **Compact (`< 780px`)**: Iconic mode (`TOOL_*` icons only with rich hover tooltips), compact search, and dynamically truncated document title.
+4. **Prominent Primary Actions ("Abrir Fichero")**:
+   - The primary call-to-action button (Opening a file) must always be comfortable and immediately discoverable.
    - Solid salmon background fill with white text and clear icon + shortcut hints.
-3. **The Document Viewport is Sacred ("PDF As Is")**:
+5. **The Document Viewport is Sacred ("PDF As Is")**:
    - The PDF document content must never be altered, tinted, inverted, or cropped by UI overlays.
    - The document canvas must occupy maximum available screen width.
    - Avoid persistent, cluttering sidebars by default. Secondary navigation (outlines, layers) must remain collapsible and on-demand.
-4. **In-Flow Page Navigation ("1 / N")**:
-   - Direct page navigation lives centered in the toolbar as a dedicated pill widget:
+6. **In-Flow Page Navigation ("1 / N")**:
+   - Direct page navigation lives in the toolbar as a dedicated pill widget:
      `[ < ]  [ current_page ]  /  total_pages  [ > ]`
    - The current page is an interactive text box where users can type a number `X` and press `Enter` to jump.
    - Always clamp page numbers safely to `1..=total_pages`.
