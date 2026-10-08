@@ -335,8 +335,8 @@ impl KestrelApp {
     /// Returns the current title bar text including the active filename.
     pub fn title_bar_text(&self) -> String {
         match &self.current_file_name {
-            Some(name) => format!("🦅 Kestrel-PDF — {}", name),
-            None => "🦅 Kestrel-PDF".to_string(),
+            Some(name) => format!("Kestrel-PDF — {}", name),
+            None => "Kestrel-PDF".to_string(),
         }
     }
 
@@ -366,8 +366,10 @@ impl KestrelApp {
         self.adopted_signature = Some(sig);
         self.signature_modal_open = false;
         self.active_tool = ActiveTool::SignContract;
-        self.status_toast =
-            Some("✍️ Signature adopted! Click on the document page to place it.".to_string());
+        self.status_toast = Some(format!(
+            "{} Signature adopted! Click on the document page to place it.",
+            crate::icons::CHECK_CIRCLE
+        ));
     }
 
     /// Places the adopted signature at specified page coordinates.
@@ -597,16 +599,19 @@ impl KestrelApp {
                 ui.horizontal(|ui| {
                     // Branding
                     ui.label(
-                        egui::RichText::new("🦅 Kestrel-PDF")
+                        egui::RichText::new(format!("{} Kestrel-PDF", crate::icons::APP_LOGO))
                             .strong()
-                            .size(14.0)
+                            .size(15.0)
                             .color(crate::theme::Theme::TEXT_PRIMARY),
                     );
                     ui.separator();
 
                     // Prominent Primary Action: "Abrir fichero" Button
-                    let open_btn = crate::theme::Theme::primary_button("📂 Abrir fichero")
-                        .min_size(Vec2::new(120.0, 28.0));
+                    let open_btn = crate::theme::Theme::primary_button(format!(
+                        "{} Abrir fichero",
+                        crate::icons::OPEN_FILE
+                    ))
+                    .min_size(Vec2::new(128.0, 28.0));
 
                     if ui
                         .add(open_btn)
@@ -627,8 +632,11 @@ impl KestrelApp {
                     }
 
                     if self.session.is_some() {
-                        let save_btn = crate::theme::Theme::accent_button("💾 Save / Export")
-                            .min_size(Vec2::new(118.0, 28.0));
+                        let save_btn = crate::theme::Theme::accent_button(format!(
+                            "{} Save / Export",
+                            crate::icons::SAVE_FILE
+                        ))
+                        .min_size(Vec2::new(124.0, 28.0));
                         if ui
                             .add(save_btn)
                             .on_hover_text("Guardar PDF modificado en el disco")
@@ -664,9 +672,9 @@ impl KestrelApp {
                     // Right: Sidebar Toggle
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let sidebar_label = if self.sidebar_open {
-                            "◀ Cerrar panel"
+                            format!("{} Cerrar panel", crate::icons::SIDEBAR)
                         } else {
-                            "☰ Panel lateral"
+                            format!("{} Panel lateral", crate::icons::SIDEBAR)
                         };
                         let toggle_btn = if self.sidebar_open {
                             crate::theme::Theme::accent_button(sidebar_label)
@@ -691,14 +699,17 @@ impl KestrelApp {
             .frame(crate::theme::Theme::ribbon_frame())
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    // Group 1: In-Flow Page Navigator: [ ◀ Prev ] [ 1 ] / 4 [ Next ▶ ]
+                    // Group 1: In-Flow Page Navigator: [ < Prev ] [ 1 ] / 4 [ Next > ]
                     if self.total_pages > 0 {
                         crate::theme::Theme::pill_frame().show(ui, |ui| {
                             ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
 
                             let prev_enabled = self.current_page > 1;
-                            let prev_btn = crate::theme::Theme::secondary_button("◀ Prev")
-                                .min_size(Vec2::new(32.0, 24.0));
+                            let prev_btn = crate::theme::Theme::secondary_button(format!(
+                                "{} Prev",
+                                crate::icons::PREV_PAGE
+                            ))
+                            .min_size(Vec2::new(32.0, 24.0));
                             if ui
                                 .add_enabled(prev_enabled, prev_btn)
                                 .on_hover_text("Página anterior (Left / Up)")
@@ -742,8 +753,11 @@ impl KestrelApp {
                             .on_hover_text(format!("Total de páginas: {}", self.total_pages));
 
                             let next_enabled = self.current_page < self.total_pages;
-                            let next_btn = crate::theme::Theme::secondary_button("Next ▶")
-                                .min_size(Vec2::new(32.0, 24.0));
+                            let next_btn = crate::theme::Theme::secondary_button(format!(
+                                "Next {}",
+                                crate::icons::NEXT_PAGE
+                            ))
+                            .min_size(Vec2::new(32.0, 24.0));
                             if ui
                                 .add_enabled(next_enabled, next_btn)
                                 .on_hover_text("Página siguiente (Right / Down)")
@@ -768,7 +782,7 @@ impl KestrelApp {
                         ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
                         if ui
                             .add(
-                                crate::theme::Theme::secondary_button("⟲")
+                                crate::theme::Theme::secondary_button(crate::icons::ROTATE_CCW)
                                     .min_size(Vec2::new(26.0, 24.0)),
                             )
                             .on_hover_text("Rotate Counter-Clockwise (90°)")
@@ -778,7 +792,7 @@ impl KestrelApp {
                         }
                         if ui
                             .add(
-                                crate::theme::Theme::secondary_button("⟳")
+                                crate::theme::Theme::secondary_button(crate::icons::ROTATE_CW)
                                     .min_size(Vec2::new(26.0, 24.0)),
                             )
                             .on_hover_text("Rotate Clockwise (90°)")
@@ -796,7 +810,7 @@ impl KestrelApp {
                     if crate::theme::Theme::segmented_tool_button(
                         ui,
                         self.active_tool == ActiveTool::Pan,
-                        "✋ Pan",
+                        format!("{} Pan", crate::icons::TOOL_PAN),
                     )
                     .on_hover_text("Pan & scroll through document")
                     .clicked()
@@ -806,7 +820,7 @@ impl KestrelApp {
                     if crate::theme::Theme::segmented_tool_button(
                         ui,
                         self.active_tool == ActiveTool::SelectText,
-                        "📝 Select",
+                        format!("{} Select", crate::icons::TOOL_SELECT),
                     )
                     .on_hover_text(format!(
                         "Select and copy text ({}) or select all ({})",
@@ -820,9 +834,9 @@ impl KestrelApp {
 
                     let form_count = self.session.as_ref().map(|s| s.forms.len()).unwrap_or(0);
                     let form_label = if form_count > 0 {
-                        format!("📋 Forms ({})", form_count)
+                        format!("{} Forms ({})", crate::icons::TOOL_FORMS, form_count)
                     } else {
-                        "📋 Forms".to_string()
+                        format!("{} Forms", crate::icons::TOOL_FORMS)
                     };
                     if crate::theme::Theme::segmented_tool_button(
                         ui,
@@ -838,7 +852,7 @@ impl KestrelApp {
                     if crate::theme::Theme::segmented_tool_button(
                         ui,
                         self.active_tool == ActiveTool::EditText,
-                        "✏️ Edit Text",
+                        format!("{} Edit Text", crate::icons::TOOL_EDIT_TEXT),
                     )
                     .on_hover_text("Add or edit text annotations")
                     .clicked()
@@ -850,7 +864,7 @@ impl KestrelApp {
                     if crate::theme::Theme::segmented_tool_button(
                         ui,
                         sign_active,
-                        "✍️ Sign Contract",
+                        format!("{} Sign Contract", crate::icons::TOOL_SIGN),
                     )
                     .on_hover_text("Sign contract with drawn or digital signature")
                     .clicked()
@@ -864,8 +878,11 @@ impl KestrelApp {
                     if sign_active
                         && ui
                             .add(
-                                crate::theme::Theme::accent_button("🖊 Create Signature")
-                                    .min_size(Vec2::new(0.0, 24.0)),
+                                crate::theme::Theme::accent_button(format!(
+                                    "{} Create Signature",
+                                    crate::icons::TOOL_SIGN
+                                ))
+                                .min_size(Vec2::new(0.0, 24.0)),
                             )
                             .on_hover_text("Open Signature Pad")
                             .clicked()
@@ -876,7 +893,7 @@ impl KestrelApp {
                     if crate::theme::Theme::segmented_tool_button(
                         ui,
                         self.active_tool == ActiveTool::RedactData,
-                        "🛡️ Redact",
+                        format!("{} Redact", crate::icons::TOOL_REDACT),
                     )
                     .on_hover_text("Permanently redact sensitive document data")
                     .clicked()
@@ -900,7 +917,8 @@ impl KestrelApp {
                             if ui
                                 .add(
                                     crate::theme::Theme::accent_button(format!(
-                                        "📋 Copy Text ({} chars)",
+                                        "{} Copy Text ({} chars)",
+                                        crate::icons::COPY_TEXT,
                                         count
                                     ))
                                     .min_size(Vec2::new(0.0, 24.0)),
@@ -917,21 +935,27 @@ impl KestrelApp {
                         if self.selection.has_image()
                             && ui
                                 .add(
-                                    crate::theme::Theme::accent_button("📋 Copy Image")
-                                        .min_size(Vec2::new(0.0, 24.0)),
+                                    crate::theme::Theme::accent_button(format!(
+                                        "{} Copy Image",
+                                        crate::icons::COPY_IMAGE
+                                    ))
+                                    .min_size(Vec2::new(0.0, 24.0)),
                                 )
                                 .on_hover_text(format!(
                                     "Copy selected image to clipboard ({})",
                                     standard_copy_shortcut_str()
                                 ))
                                 .clicked()
-                        {
-                            self.copy_selected_image(ctx);
-                        }
+                            {
+                                self.copy_selected_image(ctx);
+                            }
                         if ui
                             .add(
-                                crate::theme::Theme::secondary_button("❌ Clear")
-                                    .min_size(Vec2::new(0.0, 24.0)),
+                                crate::theme::Theme::secondary_button(format!(
+                                    "{} Clear",
+                                    crate::icons::CLOSE
+                                ))
+                                .min_size(Vec2::new(0.0, 24.0)),
                             )
                             .on_hover_text("Clear active selection (Escape)")
                             .clicked()
@@ -947,7 +971,7 @@ impl KestrelApp {
                         ui.spacing_mut().item_spacing = Vec2::new(3.0, 0.0);
                         if ui
                             .add(
-                                crate::theme::Theme::secondary_button("➕")
+                                crate::theme::Theme::secondary_button(crate::icons::ZOOM_IN)
                                     .min_size(Vec2::new(26.0, 24.0)),
                             )
                             .on_hover_text("Zoom In (+15%)")
@@ -964,7 +988,7 @@ impl KestrelApp {
                         .on_hover_text("Current zoom percentage");
                         if ui
                             .add(
-                                crate::theme::Theme::secondary_button("➖")
+                                crate::theme::Theme::secondary_button(crate::icons::ZOOM_OUT)
                                     .min_size(Vec2::new(26.0, 24.0)),
                             )
                             .on_hover_text("Zoom Out (-15%)")
@@ -1011,8 +1035,11 @@ impl KestrelApp {
                         ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
                         if ui
                             .add(
-                                crate::theme::Theme::secondary_button("Find")
-                                    .min_size(Vec2::new(0.0, 24.0)),
+                                crate::theme::Theme::secondary_button(format!(
+                                    "{} Find",
+                                    crate::icons::SEARCH
+                                ))
+                                .min_size(Vec2::new(0.0, 24.0)),
                             )
                             .on_hover_text("Execute search")
                             .clicked()
@@ -1027,7 +1054,7 @@ impl KestrelApp {
                         if search_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             self.execute_search();
                         }
-                        ui.label("🔍");
+                        ui.label(crate::icons::SEARCH);
                     });
                 });
             });
@@ -1040,7 +1067,7 @@ impl KestrelApp {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new("ℹ")
+                            egui::RichText::new(crate::icons::INFO)
                                 .color(crate::theme::Theme::ACCENT_OCHRE)
                                 .strong()
                                 .size(14.0),
@@ -1053,7 +1080,7 @@ impl KestrelApp {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .add(
-                                    crate::theme::Theme::secondary_button("✖")
+                                    crate::theme::Theme::secondary_button(crate::icons::CLOSE)
                                         .min_size(Vec2::new(24.0, 20.0)),
                                 )
                                 .on_hover_text("Cerrar mensaje")
@@ -1173,9 +1200,10 @@ impl KestrelApp {
                                         ui.label("No AcroForm fields detected.");
                                         ui.add_space(8.0);
                                         if ui
-                                            .add(crate::theme::Theme::accent_button(
-                                                "➕ Add Form Field",
-                                            ))
+                                            .add(crate::theme::Theme::accent_button(format!(
+                                                "{} Add Form Field",
+                                                crate::icons::ADD
+                                            )))
                                             .clicked()
                                         {
                                             let new_field = FormField::new_text(
@@ -1196,7 +1224,7 @@ impl KestrelApp {
                                                 |ui| {
                                                     if ui
                                                         .add(crate::theme::Theme::accent_button(
-                                                            "➕ Add",
+                                                            format!("{} Add", crate::icons::ADD),
                                                         ))
                                                         .clicked()
                                                     {
@@ -1369,7 +1397,11 @@ impl KestrelApp {
                         .show(ui, |ui| {
                             ui.set_max_width(440.0);
                             ui.vertical_centered(|ui| {
-                                ui.label(egui::RichText::new("🦅").size(48.0));
+                                ui.label(
+                                    egui::RichText::new(crate::icons::APP_LOGO)
+                                        .color(crate::theme::Theme::ACCENT_SALMON)
+                                        .size(54.0),
+                                );
                                 ui.add_space(8.0);
                                 ui.heading(
                                     egui::RichText::new("Kestrel-PDF")
@@ -1388,10 +1420,13 @@ impl KestrelApp {
                                 ui.add_space(28.0);
 
                                 let big_open_btn = egui::Button::new(
-                                    egui::RichText::new("📂  Abrir fichero PDF")
-                                        .color(Color32::WHITE)
-                                        .strong()
-                                        .size(15.0),
+                                    egui::RichText::new(format!(
+                                        "{}  Abrir fichero PDF",
+                                        crate::icons::OPEN_FILE
+                                    ))
+                                    .color(Color32::WHITE)
+                                    .strong()
+                                    .size(15.0),
                                 )
                                 .fill(crate::theme::Theme::ACCENT_SALMON)
                                 .rounding(8.0)
@@ -1646,7 +1681,8 @@ impl KestrelApp {
                                         if self.selection.has_text()
                                             && ui
                                                 .button(format!(
-                                                    "📋 Copy Text ({})",
+                                                    "{} Copy Text ({})",
+                                                    crate::icons::COPY_TEXT,
                                                     standard_copy_shortcut_str()
                                                 ))
                                                 .clicked()
@@ -1657,7 +1693,8 @@ impl KestrelApp {
                                         if self.selection.has_image()
                                             && ui
                                                 .button(format!(
-                                                    "📋 Copy Image ({})",
+                                                    "{} Copy Image ({})",
+                                                    crate::icons::COPY_IMAGE,
                                                     standard_copy_shortcut_str()
                                                 ))
                                                 .clicked()
@@ -1665,7 +1702,13 @@ impl KestrelApp {
                                             self.copy_selected_image(ctx);
                                             ui.close_menu();
                                         }
-                                        if ui.button("❌ Clear Selection (Esc)").clicked() {
+                                        if ui
+                                            .button(format!(
+                                                "{} Clear Selection (Esc)",
+                                                crate::icons::CLOSE
+                                            ))
+                                            .clicked()
+                                        {
                                             self.clear_selection();
                                             ui.close_menu();
                                         }
@@ -2029,7 +2072,7 @@ impl KestrelApp {
                                             let display_val = match &field.field_type {
                                                 FormFieldType::CheckBox { checked } => {
                                                     if *checked {
-                                                        "✔".to_string()
+                                                        crate::icons::CHECK.to_string()
                                                     } else {
                                                         "".to_string()
                                                     }
@@ -2124,7 +2167,10 @@ impl KestrelApp {
                                                     painter.text(
                                                         badge_rect.center(),
                                                         egui::Align2::CENTER_CENTER,
-                                                        "🔒 Digitally Verified PAdES / SHA-256",
+                                                        format!(
+                                                            "{} Digitally Verified PAdES / SHA-256",
+                                                            crate::icons::LOCK
+                                                        ),
                                                         egui::FontId::proportional(
                                                             (9.0 * self.zoom_level)
                                                                 .clamp(7.0, 14.0),
@@ -2237,8 +2283,10 @@ impl KestrelApp {
                                                         badge_rect.center(),
                                                         egui::Align2::CENTER_CENTER,
                                                         format!(
-                                                            "🖼️ Image ({}×{} px)",
-                                                            img.pixel_width, img.pixel_height
+                                                            "{} Image ({}×{} px)",
+                                                            crate::icons::COPY_IMAGE,
+                                                            img.pixel_width,
+                                                            img.pixel_height
                                                         ),
                                                         egui::FontId::proportional(11.0),
                                                         Color32::WHITE,
@@ -2294,77 +2342,68 @@ impl KestrelApp {
 
         // 5. Stylus / Mouse Signature Pad Window
         if self.signature_modal_open {
-            egui::Window::new("✍️ Sign Contract — Digital & Visual Signature")
-                .collapsible(false)
-                .resizable(false)
-                .default_size(Vec2::new(460.0, 500.0))
-                .show(ctx, |ui| {
-                    ui.label(
-                        egui::RichText::new(
-                            "Draw your signature below using mouse or pen stylus with Bézier smoothing:",
-                        )
-                        .color(crate::theme::Theme::TEXT_SECONDARY)
-                        .size(12.0),
-                    );
-                    ui.add_space(6.0);
+            egui::Window::new(format!(
+                "{} Sign Contract — Digital & Visual Signature",
+                crate::icons::TOOL_SIGN
+            ))
+            .collapsible(false)
+            .resizable(false)
+            .default_size(Vec2::new(460.0, 500.0))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Draw your signature below using mouse or pen stylus with Bézier smoothing:",
+                    )
+                    .color(crate::theme::Theme::TEXT_SECONDARY)
+                    .size(12.0),
+                );
+                ui.add_space(6.0);
 
-                    // Drawing Canvas Pad (420x160)
-                    let pad_size = Vec2::new(420.0, 160.0);
-                    let (pad_resp, pad_painter) = ui.allocate_painter(pad_size, egui::Sense::drag());
-                    let pad_rect = pad_resp.rect;
+                // Drawing Canvas Pad (420x160)
+                let pad_size = Vec2::new(420.0, 160.0);
+                let (pad_resp, pad_painter) = ui.allocate_painter(pad_size, egui::Sense::drag());
+                let pad_rect = pad_resp.rect;
 
-                    pad_painter.rect_filled(pad_rect, 6.0, Color32::from_rgb(250, 250, 252));
-                    pad_painter.rect_stroke(
-                        pad_rect,
-                        6.0,
-                        egui::Stroke::new(1.5_f32, crate::theme::Theme::BORDER_DARK),
-                    );
+                pad_painter.rect_filled(pad_rect, 6.0, Color32::from_rgb(250, 250, 252));
+                pad_painter.rect_stroke(
+                    pad_rect,
+                    6.0,
+                    egui::Stroke::new(1.5_f32, crate::theme::Theme::BORDER_DARK),
+                );
 
-                    // Track drag points into current stroke
-                    if pad_resp.drag_started() {
-                        self.signature_pad_current_stroke.clear();
-                    }
-                    if pad_resp.dragged() {
-                        if let Some(pos) = pad_resp.interact_pointer_pos() {
-                            if pad_rect.contains(pos) {
-                                let pressure = 1.0;
-                                self.signature_pad_current_stroke.push(StrokePoint::new(
-                                    pos.x - pad_rect.left(),
-                                    pos.y - pad_rect.top(),
-                                    pressure,
-                                ));
-                            }
+                // Track drag points into current stroke
+                if pad_resp.drag_started() {
+                    self.signature_pad_current_stroke.clear();
+                }
+                if pad_resp.dragged() {
+                    if let Some(pos) = pad_resp.interact_pointer_pos() {
+                        if pad_rect.contains(pos) {
+                            let pressure = 1.0;
+                            self.signature_pad_current_stroke.push(StrokePoint::new(
+                                pos.x - pad_rect.left(),
+                                pos.y - pad_rect.top(),
+                                pressure,
+                            ));
                         }
                     }
-                    if pad_resp.drag_stopped() && !self.signature_pad_current_stroke.is_empty() {
-                        let stroke = std::mem::take(&mut self.signature_pad_current_stroke);
-                        let smoothed = sign::smooth_stroke_bezier(&stroke, 4);
-                        self.signature_pad_raw_strokes.push(smoothed);
-                    }
+                }
+                if pad_resp.drag_stopped() && !self.signature_pad_current_stroke.is_empty() {
+                    let stroke = std::mem::take(&mut self.signature_pad_current_stroke);
+                    let smoothed = sign::smooth_stroke_bezier(&stroke, 4);
+                    self.signature_pad_raw_strokes.push(smoothed);
+                }
 
-                    // Render existing pad strokes
-                    let ink_color = if self.signature_blue_ink {
-                        Color32::from_rgb(0, 51, 160)
-                    } else {
-                        Color32::from_rgb(15, 23, 42)
-                    };
+                // Render existing pad strokes
+                let ink_color = if self.signature_blue_ink {
+                    Color32::from_rgb(0, 51, 160)
+                } else {
+                    Color32::from_rgb(15, 23, 42)
+                };
 
-                    for stroke in &self.signature_pad_raw_strokes {
-                        for i in 0..stroke.len().saturating_sub(1) {
-                            let p1 = stroke[i];
-                            let p2 = stroke[i + 1];
-                            pad_painter.line_segment(
-                                [
-                                    egui::pos2(pad_rect.left() + p1.x, pad_rect.top() + p1.y),
-                                    egui::pos2(pad_rect.left() + p2.x, pad_rect.top() + p2.y),
-                                ],
-                                egui::Stroke::new(2.4_f32, ink_color),
-                            );
-                        }
-                    }
-                    for i in 0..self.signature_pad_current_stroke.len().saturating_sub(1) {
-                        let p1 = self.signature_pad_current_stroke[i];
-                        let p2 = self.signature_pad_current_stroke[i + 1];
+                for stroke in &self.signature_pad_raw_strokes {
+                    for i in 0..stroke.len().saturating_sub(1) {
+                        let p1 = stroke[i];
+                        let p2 = stroke[i + 1];
                         pad_painter.line_segment(
                             [
                                 egui::pos2(pad_rect.left() + p1.x, pad_rect.top() + p1.y),
@@ -2373,87 +2412,109 @@ impl KestrelApp {
                             egui::Stroke::new(2.4_f32, ink_color),
                         );
                     }
+                }
+                for i in 0..self.signature_pad_current_stroke.len().saturating_sub(1) {
+                    let p1 = self.signature_pad_current_stroke[i];
+                    let p2 = self.signature_pad_current_stroke[i + 1];
+                    pad_painter.line_segment(
+                        [
+                            egui::pos2(pad_rect.left() + p1.x, pad_rect.top() + p1.y),
+                            egui::pos2(pad_rect.left() + p2.x, pad_rect.top() + p2.y),
+                        ],
+                        egui::Stroke::new(2.4_f32, ink_color),
+                    );
+                }
 
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Ink Color:")
-                                .color(crate::theme::Theme::TEXT_SECONDARY),
-                        );
-                        ui.radio_value(&mut self.signature_blue_ink, true, "Royal Blue");
-                        ui.radio_value(&mut self.signature_blue_ink, false, "Deep Slate");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Ink Color:")
+                            .color(crate::theme::Theme::TEXT_SECONDARY),
+                    );
+                    ui.radio_value(&mut self.signature_blue_ink, true, "Royal Blue");
+                    ui.radio_value(&mut self.signature_blue_ink, false, "Deep Slate");
 
-                        ui.separator();
-                        if ui
-                            .add(crate::theme::Theme::secondary_button("🗑 Clear Pad"))
-                            .clicked()
-                        {
-                            self.signature_pad_raw_strokes.clear();
-                            self.signature_pad_current_stroke.clear();
-                        }
-                        if ui
-                            .add(crate::theme::Theme::secondary_button("↩ Undo"))
-                            .clicked()
-                        {
-                            self.signature_pad_raw_strokes.pop();
-                        }
-                    });
-
-                    ui.add_space(6.0);
                     ui.separator();
-                    ui.add_space(6.0);
-
-                    crate::theme::Theme::card_frame().show(ui, |ui| {
-                        ui.heading(
-                            egui::RichText::new("🔒 Cryptographic PAdES Metadata")
-                                .color(Color32::WHITE)
-                                .size(14.0),
-                        );
-                        ui.add_space(4.0);
-                        ui.checkbox(
-                            &mut self.embed_digital_signature,
-                            "Embed PAdES Digital Signature (SHA-256 Digest)",
-                        );
-
-                        if self.embed_digital_signature {
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new("Signer Name:")
-                                        .color(crate::theme::Theme::TEXT_SECONDARY),
-                                );
-                                ui.text_edit_singleline(&mut self.signer_name_input);
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new("Reason:")
-                                        .color(crate::theme::Theme::TEXT_SECONDARY),
-                                );
-                                ui.text_edit_singleline(&mut self.signature_reason_input);
-                            });
-                        }
-                    });
-
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add(crate::theme::Theme::primary_button(
-                                "✅ Adopt & Place Signature",
-                            ))
-                            .clicked()
-                        {
-                            self.adopt_signature_from_pad();
-                        }
-                        if ui
-                            .add(crate::theme::Theme::secondary_button("Cancel"))
-                            .clicked()
-                        {
-                            self.signature_modal_open = false;
-                        }
-                    });
+                    if ui
+                        .add(crate::theme::Theme::secondary_button(format!(
+                            "{} Clear Pad",
+                            crate::icons::TRASH
+                        )))
+                        .clicked()
+                    {
+                        self.signature_pad_raw_strokes.clear();
+                        self.signature_pad_current_stroke.clear();
+                    }
+                    if ui
+                        .add(crate::theme::Theme::secondary_button(format!(
+                            "{} Undo",
+                            crate::icons::UNDO
+                        )))
+                        .clicked()
+                    {
+                        self.signature_pad_raw_strokes.pop();
+                    }
                 });
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                crate::theme::Theme::card_frame().show(ui, |ui| {
+                    ui.heading(
+                        egui::RichText::new(format!(
+                            "{} Cryptographic PAdES Metadata",
+                            crate::icons::LOCK
+                        ))
+                        .color(Color32::WHITE)
+                        .size(14.0),
+                    );
+                    ui.add_space(4.0);
+                    ui.checkbox(
+                        &mut self.embed_digital_signature,
+                        "Embed PAdES Digital Signature (SHA-256 Digest)",
+                    );
+
+                    if self.embed_digital_signature {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Signer Name:")
+                                    .color(crate::theme::Theme::TEXT_SECONDARY),
+                            );
+                            ui.text_edit_singleline(&mut self.signer_name_input);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Reason:")
+                                    .color(crate::theme::Theme::TEXT_SECONDARY),
+                            );
+                            ui.text_edit_singleline(&mut self.signature_reason_input);
+                        });
+                    }
+                });
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(crate::theme::Theme::primary_button(format!(
+                            "{} Adopt & Place Signature",
+                            crate::icons::CHECK
+                        )))
+                        .clicked()
+                    {
+                        self.adopt_signature_from_pad();
+                    }
+                    if ui
+                        .add(crate::theme::Theme::secondary_button("Cancel"))
+                        .clicked()
+                    {
+                        self.signature_modal_open = false;
+                    }
+                });
+            });
         }
     }
 }

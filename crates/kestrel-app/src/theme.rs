@@ -38,8 +38,25 @@ impl Theme {
     /// Viewport canvas surround backdrop: Slate 700 (#334155)
     pub const CANVAS_BACKDROP: Color32 = Color32::from_rgb(51, 65, 85);
 
-    /// Apply the unified Kestrel-PDF visuals, color palette, and spacing globally to an `egui::Context`.
+    /// Apply the unified Kestrel-PDF visuals, color palette, spacing, and icon fonts to an `egui::Context`.
     pub fn apply(ctx: &egui::Context) {
+        // Register Phosphor vector icon font once per Context to avoid font atlas churn
+        let already_loaded = ctx.data(|d| {
+            d.get_temp::<bool>(egui::Id::new("kestrel_theme_fonts_loaded"))
+                .unwrap_or(false)
+        });
+        if !already_loaded {
+            let mut fonts = egui::FontDefinitions::default();
+            egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+            if let Some(mono_keys) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                mono_keys.push("phosphor".into());
+            }
+            ctx.set_fonts(fonts);
+            ctx.data_mut(|d| {
+                d.insert_temp(egui::Id::new("kestrel_theme_fonts_loaded"), true);
+            });
+        }
+
         let mut visuals = egui::Visuals::dark();
 
         visuals.panel_fill = Self::PANEL_DARK;

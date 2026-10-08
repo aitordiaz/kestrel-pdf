@@ -1713,7 +1713,9 @@ fn test_e2e_modern_design_system_tokens_and_visual_consistency() {
         "Toast message must be rendered"
     );
     assert!(
-        toast_texts.iter().any(|t| t.contains("ℹ")),
+        toast_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::INFO)),
         "Toast must render information badge icon"
     );
 
@@ -1755,4 +1757,161 @@ fn test_e2e_modern_design_system_tokens_and_visual_consistency() {
             .any(|t| t.contains("Adopt & Place Signature")),
         "Adopt button must be present in signature modal"
     );
+}
+
+#[test]
+fn test_e2e_phosphor_icon_font_glyphs_and_typography() {
+    let mut app = KestrelApp::default();
+    let ctx = egui::Context::default();
+
+    // 1. Initial empty state: Header brand icon and open file icon rendered
+    let out = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let texts = extract_all_text_from_shapes(&out.shapes);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::APP_LOGO)),
+        "Header or welcome card must render APP_LOGO vector icon"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::OPEN_FILE)),
+        "Header or welcome card must render OPEN_FILE vector icon"
+    );
+
+    // 2. Load synthetic document: Action ribbon icons rendered
+    let doc_bytes = generate_synthetic_visual_showcase_pdf();
+    app.load_document_bytes(doc_bytes, Some("icons_test.pdf".to_string()));
+
+    let out_doc = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let doc_texts = extract_all_text_from_shapes(&out_doc.shapes);
+
+    // Navigation and rotation icons
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::PREV_PAGE)),
+        "Navigator must render PREV_PAGE icon"
+    );
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::NEXT_PAGE)),
+        "Navigator must render NEXT_PAGE icon"
+    );
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::ROTATE_CCW)),
+        "Ribbon must render ROTATE_CCW icon"
+    );
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::ROTATE_CW)),
+        "Ribbon must render ROTATE_CW icon"
+    );
+
+    // Interactive tool icons
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_PAN)),
+        "Ribbon must render TOOL_PAN icon"
+    );
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_SELECT)),
+        "Ribbon must render TOOL_SELECT icon"
+    );
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_FORMS)),
+        "Ribbon must render TOOL_FORMS icon"
+    );
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_EDIT_TEXT)),
+        "Ribbon must render TOOL_EDIT_TEXT icon"
+    );
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_SIGN)),
+        "Ribbon must render TOOL_SIGN icon"
+    );
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_REDACT)),
+        "Ribbon must render TOOL_REDACT icon"
+    );
+
+    // Zoom steppers
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::ZOOM_IN)),
+        "Zoom controls must render ZOOM_IN icon"
+    );
+    assert!(
+        doc_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::ZOOM_OUT)),
+        "Zoom controls must render ZOOM_OUT icon"
+    );
+
+    // 3. Signature modal: Modal action icons
+    app.signature_modal_open = true;
+    let modal_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        ..Default::default()
+    };
+    let _ = ctx.run(modal_input.clone(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let modal_out = ctx.run(modal_input, |ctx| {
+        app.render_ui(ctx);
+    });
+    let modal_texts = extract_all_text_from_shapes(&modal_out.shapes);
+    assert!(
+        modal_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TRASH)),
+        "Signature modal must render TRASH icon"
+    );
+    assert!(
+        modal_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::UNDO)),
+        "Signature modal must render UNDO icon"
+    );
+
+    // 4. Verify absence of legacy broken emoji codepoints
+    let legacy_emojis = [
+        "🦅", "📂", "💾", "✍️", "✋", "📝", "📋", "✏️", "🛡️", "➕", "➖", "🔍", "🔒", "🗑",
+    ];
+    for emoji in legacy_emojis {
+        assert!(
+            !doc_texts.iter().any(|t| t.contains(emoji)),
+            "Legacy emoji '{}' should not be present in document UI text shapes",
+            emoji
+        );
+        assert!(
+            !modal_texts.iter().any(|t| t.contains(emoji)),
+            "Legacy emoji '{}' should not be present in modal UI text shapes",
+            emoji
+        );
+    }
 }
