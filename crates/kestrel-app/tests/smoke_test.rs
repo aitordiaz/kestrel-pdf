@@ -4,6 +4,7 @@ use kestrel_app::app::{
     standard_copy_shortcut_str, standard_select_all_shortcut_str, truncate_filename_middle,
     ActiveTool, FitMode, KestrelApp, SidebarTab,
 };
+use kestrel_app::theme::Theme;
 use kestrel_core::synthetic::{
     generate_all_synthetic_stress_tiers, generate_synthetic_forms_pdf,
     generate_synthetic_search_corpus_pdf, generate_synthetic_visual_showcase_pdf,
@@ -19,6 +20,36 @@ fn has_rect_with_fill(shapes: &[egui::epaint::ClippedShape], target_fill: egui::
         }
     }
     shapes.iter().any(|c| check_shape(&c.shape, target_fill))
+}
+
+fn find_rects_with_fill(
+    shapes: &[egui::epaint::ClippedShape],
+    target_fill: egui::Color32,
+) -> Vec<egui::Rect> {
+    fn collect_rects(
+        shape: &egui::epaint::Shape,
+        target: egui::Color32,
+        acc: &mut Vec<egui::Rect>,
+    ) {
+        match shape {
+            egui::epaint::Shape::Rect(rect_shape) => {
+                if rect_shape.fill == target {
+                    acc.push(rect_shape.rect);
+                }
+            }
+            egui::epaint::Shape::Vec(vec) => {
+                for s in vec {
+                    collect_rects(s, target, acc);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut acc = Vec::new();
+    for c in shapes {
+        collect_rects(&c.shape, target_fill, &mut acc);
+    }
+    acc
 }
 
 /// Helper function to create a minimal, valid in-memory PDF document.
@@ -563,14 +594,12 @@ fn test_e2e_multi_page_search_navigation_and_visual_highlighting() {
     assert!(texts1.iter().any(|t| t.contains("Found 1 matching pages:")));
     assert!(texts1.iter().any(|t| t.contains("ALPHA_SEARCH_TOKEN_42")));
 
-    // Assert visual highlight rectangle is rendered with yellow highlight color
-    let has_yellow_highlight = has_rect_with_fill(
-        &output1.shapes,
-        Color32::from_rgba_unmultiplied(255, 235, 59, 140),
-    );
+    // Assert visual highlight rectangle is rendered with search highlight color
+    let has_search_highlight = has_rect_with_fill(&output1.shapes, Theme::SEARCH_HIGHLIGHT_ACTIVE)
+        || has_rect_with_fill(&output1.shapes, Theme::SEARCH_HIGHLIGHT_REGULAR);
     assert!(
-        has_yellow_highlight,
-        "Yellow highlight rect must be drawn behind matching search keyword on canvas"
+        has_search_highlight,
+        "Search highlight rect must be drawn behind matching search keyword on canvas"
     );
 
     // 3. Multi-occurrence search & navigation
@@ -580,8 +609,9 @@ fn test_e2e_multi_page_search_navigation_and_visual_highlighting() {
     assert_eq!(app.search_results[0].page_index, 2);
 
     // Click search result to navigate to page 3
-    app.current_page = (app.search_results[0].page_index as usize) + 1;
+    app.navigate_to_search_result(0);
     assert_eq!(app.current_page, 3);
+    assert_eq!(app.page_input_text, "3");
 
     let output2 = ctx.run(egui::RawInput::default(), |ctx| {
         app.render_ui(ctx);
@@ -2076,4 +2106,94 @@ fn test_clamp_rgba_image_to_max_side_and_texture_safety() {
     let img = egui::ColorImage::from_rgba_unmultiplied([clamped_w, clamped_h], &clamped_cow);
     let handle = ctx.load_texture("safe_clamped_tile", img, egui::TextureOptions::LINEAR);
     assert_eq!(handle.size(), [clamped_w, clamped_h]);
+}
+
+#[test]
+fn test_e2e_search_navigation_scroll_and_page_synchronization() {
+    let pdf_bytes = generate_synthetic_search_corpus_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("search_corpus.pdf".to_string()));
+    assert_eq!(app.total_pages, 3);
+    assert_eq!(app.current_page, 1);
+
+    // 1. Execute search query for token on Page 3
+    app.search_query = "GAMMA_IBAN_SPANISH_ES91".to_string();
+    app.execute_search();
+
+    assert_eq!(app.search_results.len(), 1);
+    assert_eq!(app.sidebar_tab, SidebarTab::SearchResults);
+    assert!(app.sidebar_open);
+
+    // Initial execute_search should have selected result 0 and scheduled navigation
+    assert_eq!(app.selected_search_result, Some(0));
+    assert_eq!(app.current_page, 3);
+    assert_eq!(app.page_input_text, "3");
+    assert_eq!(app.scroll_to_page, Some(2));
+    assert!(app.scroll_to_search_match);
+
+    // 2. Render frame with egui Context
+    let ctx = Context::default();
+    let _out = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+
+    // After rendering, scroll target must have been consumed
+    assert_eq!(app.scroll_to_page, None);
+    assert!(!app.scroll_to_search_match);
+
+    // 3. Test next/previous search result navigation cycling
+    app.search_query = "ALPHA".to_string();
+    app.execute_search();
+    assert!(!app.search_results.is_empty());
+    assert_eq!(app.selected_search_result, Some(0));
+
+    // Navigate to next
+    app.next_search_result();
+    assert!(app.selected_search_result.is_some());
+
+    // Navigate to previous
+    app.prev_search_result();
+    assert_eq!(app.selected_search_result, Some(0));
+}
+
+#[test]
+fn test_e2e_exact_word_search_highlight_bounds_not_whole_paragraph() {
+    let pdf_bytes = generate_synthetic_search_corpus_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("search_corpus.pdf".to_string()));
+
+    // Target a specific keyword in a long sentence on Page 1:
+    // Sentence: "Unique token for query verification: ALPHA_SEARCH_TOKEN_42." (58 chars, font_size 11)
+    // Query: "ALPHA_SEARCH_TOKEN_42" (21 chars)
+    app.search_query = "ALPHA_SEARCH_TOKEN_42".to_string();
+    app.execute_search();
+
+    let ctx = Context::default();
+    let output = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+
+    // Extract all rectangles with the search highlight color
+    let highlight_rects = find_rects_with_fill(&output.shapes, Theme::SEARCH_HIGHLIGHT_ACTIVE);
+    assert!(
+        !highlight_rects.is_empty(),
+        "Must render active search highlight rectangle"
+    );
+
+    let hl_rect = highlight_rects[0];
+    let hl_width = hl_rect.width();
+
+    // The whole line is ~58 chars long (> 320px wide).
+    // The exact word "ALPHA_SEARCH_TOKEN_42" is 21 chars long (~120-180px wide).
+    // With whole paragraph bloat, hl_width was > 330px.
+    assert!(
+        hl_width < 250.0,
+        "Highlight width ({}) must be restricted to the exact word and strictly smaller than whole paragraph (> 330px)",
+        hl_width
+    );
+    assert!(
+        hl_width > 50.0,
+        "Highlight width ({}) must cover the searched keyword",
+        hl_width
+    );
 }

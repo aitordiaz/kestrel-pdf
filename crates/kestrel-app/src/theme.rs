@@ -38,6 +38,13 @@ impl Theme {
     /// Viewport canvas surround backdrop: Slate 700 (#334155)
     pub const CANVAS_BACKDROP: Color32 = Color32::from_rgb(51, 65, 85);
 
+    /// Search match highlight token (sunny yellow): #FEF08A with alpha
+    pub const SEARCH_HIGHLIGHT_REGULAR: Color32 =
+        Color32::from_rgba_premultiplied(179, 169, 97, 180);
+    /// Active / focused search match highlight token (warm amber): #FB923C with alpha
+    pub const SEARCH_HIGHLIGHT_ACTIVE: Color32 =
+        Color32::from_rgba_premultiplied(206, 120, 49, 210);
+
     /// Apply the unified Kestrel-PDF visuals, color palette, spacing, and icon fonts to an `egui::Context`.
     pub fn apply(ctx: &egui::Context) {
         // Register Phosphor vector icon font once per Context to avoid font atlas churn
