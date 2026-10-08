@@ -16,6 +16,8 @@ pub const SAVE_FILE: &str = regular::FLOPPY_DISK;
 /// Navigation & Orientation
 pub const PREV_PAGE: &str = regular::CARET_LEFT;
 pub const NEXT_PAGE: &str = regular::CARET_RIGHT;
+pub const CARET_LEFT: &str = regular::CARET_LEFT;
+pub const CARET_RIGHT: &str = regular::CARET_RIGHT;
 pub const ROTATE_CCW: &str = regular::ARROW_COUNTER_CLOCKWISE;
 pub const ROTATE_CW: &str = regular::ARROW_CLOCKWISE;
 pub const SIDEBAR: &str = regular::SIDEBAR_SIMPLE;

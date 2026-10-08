@@ -108,6 +108,9 @@ pub struct KestrelApp {
     pub status_toast: Option<String>,
     pub last_window_title: String,
     pub page_input_text: String,
+    pub selected_search_result: Option<usize>,
+    pub scroll_to_page: Option<usize>,
+    pub scroll_to_search_match: bool,
 }
 
 impl Default for KestrelApp {
@@ -124,6 +127,9 @@ impl Default for KestrelApp {
             sidebar_tab: SidebarTab::Outlines,
             search_query: String::new(),
             search_results: Vec::new(),
+            selected_search_result: None,
+            scroll_to_page: None,
+            scroll_to_search_match: false,
             pipeline: Arc::new(RenderPipeline::new(128)),
             textures: HashMap::new(),
             image_textures: HashMap::new(),
@@ -267,7 +273,7 @@ impl KestrelApp {
             None => "Kestrel-PDF".to_string(),
         }
     }
-    /// Safely updates the current page index and synchronizes the input buffer.
+    /// Safely updates the current page index, synchronizes the input buffer, and queues programmatic viewport scroll.
     pub fn set_current_page(&mut self, page: usize) {
         if self.total_pages > 0 {
             self.current_page = page.clamp(1, self.total_pages);
@@ -279,6 +285,9 @@ impl KestrelApp {
         } else {
             "0".to_string()
         };
+        if self.current_page > 0 {
+            self.scroll_to_page = Some(self.current_page - 1);
+        }
     }
 
     /// Loads a PDF from raw byte buffer (desktop or WASM).
@@ -290,6 +299,9 @@ impl KestrelApp {
             self.textures.clear();
             self.image_textures.clear();
             self.search_results.clear();
+            self.selected_search_result = None;
+            self.scroll_to_page = None;
+            self.scroll_to_search_match = false;
             self.adopted_signature = None;
             self.selection.clear();
             self.status_toast = Some("Document loaded successfully.".to_string());
@@ -361,8 +373,56 @@ impl KestrelApp {
             if !self.search_results.is_empty() {
                 self.sidebar_tab = SidebarTab::SearchResults;
                 self.sidebar_open = true;
+                self.navigate_to_search_result(0);
+            } else {
+                self.selected_search_result = None;
+                self.status_toast = Some("No search matches found".to_string());
             }
         }
+    }
+
+    /// Navigates to a specific search result by index, synchronizing page indicator and scheduling viewport scroll.
+    pub fn navigate_to_search_result(&mut self, idx: usize) {
+        if let Some(res) = self.search_results.get(idx).cloned() {
+            self.selected_search_result = Some(idx);
+            self.set_current_page(res.page_index as usize + 1);
+            self.scroll_to_page = Some(res.page_index as usize);
+            self.scroll_to_search_match = true;
+            self.status_toast = Some(format!(
+                "Navigated to search match on Page {}",
+                res.page_index + 1
+            ));
+        }
+    }
+
+    /// Navigates to the next search result in circular order.
+    pub fn next_search_result(&mut self) {
+        if self.search_results.is_empty() {
+            return;
+        }
+        let next_idx = match self.selected_search_result {
+            Some(idx) => (idx + 1) % self.search_results.len(),
+            None => 0,
+        };
+        self.navigate_to_search_result(next_idx);
+    }
+
+    /// Navigates to the previous search result in circular order.
+    pub fn prev_search_result(&mut self) {
+        if self.search_results.is_empty() {
+            return;
+        }
+        let prev_idx = match self.selected_search_result {
+            Some(idx) => {
+                if idx == 0 {
+                    self.search_results.len().saturating_sub(1)
+                } else {
+                    idx - 1
+                }
+            }
+            None => 0,
+        };
+        self.navigate_to_search_result(prev_idx);
     }
 
     /// Returns the current title bar text including the active filename.
@@ -1181,7 +1241,7 @@ impl KestrelApp {
                                     crate::theme::Theme::secondary_button(find_label)
                                         .min_size(Vec2::new(0.0, 24.0)),
                                 )
-                                .on_hover_text("Execute search")
+                                .on_hover_text("Buscar término en el documento")
                                 .clicked()
                             {
                                 self.execute_search();
@@ -1198,10 +1258,41 @@ impl KestrelApp {
                                     .desired_width(search_w)
                                     .hint_text("Search…"),
                             );
-                            if search_resp.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                            {
-                                self.execute_search();
+                            let enter_pressed = search_resp.has_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if enter_pressed {
+                                if !self.search_results.is_empty() {
+                                    self.next_search_result();
+                                } else {
+                                    self.execute_search();
+                                }
+                            }
+
+                            if !self.search_results.is_empty() && !is_compact {
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::secondary_button(
+                                            crate::icons::CARET_LEFT,
+                                        )
+                                        .min_size(Vec2::new(18.0, 24.0)),
+                                    )
+                                    .on_hover_text("Resultado anterior")
+                                    .clicked()
+                                {
+                                    self.prev_search_result();
+                                }
+                                if ui
+                                    .add(
+                                        crate::theme::Theme::secondary_button(
+                                            crate::icons::CARET_RIGHT,
+                                        )
+                                        .min_size(Vec2::new(18.0, 24.0)),
+                                    )
+                                    .on_hover_text("Siguiente resultado")
+                                    .clicked()
+                                {
+                                    self.next_search_result();
+                                }
                             }
                         });
                     });
@@ -1311,7 +1402,7 @@ impl KestrelApp {
                                         crate::theme::Theme::secondary_button(label)
                                     };
                                     if ui.add_sized([ui.available_width(), 28.0], btn).clicked() {
-                                        self.current_page = i;
+                                        self.set_current_page(i);
                                     }
                                     ui.add_space(2.0);
                                 }
@@ -1326,14 +1417,18 @@ impl KestrelApp {
                                     if session.outlines.is_empty() {
                                         ui.label("No document outlines / bookmarks.");
                                     } else {
+                                        let mut target_page = None;
                                         for outline in &session.outlines {
                                             crate::theme::Theme::card_frame().show(ui, |ui| {
                                                 if ui.link(&outline.title).clicked() {
-                                                    self.current_page =
-                                                        (outline.target_page as usize) + 1;
+                                                    target_page =
+                                                        Some((outline.target_page as usize) + 1);
                                                 }
                                             });
                                             ui.add_space(3.0);
+                                        }
+                                        if let Some(page) = target_page {
+                                            self.set_current_page(page);
                                         }
                                     }
                                 } else {
@@ -1506,23 +1601,35 @@ impl KestrelApp {
                                         .color(crate::theme::Theme::TEXT_SECONDARY),
                                     );
                                     ui.add_space(4.0);
-                                    for res in &self.search_results {
+                                    let mut nav_idx = None;
+                                    for (res_idx, res) in self.search_results.iter().enumerate() {
+                                        let is_selected =
+                                            self.selected_search_result == Some(res_idx);
                                         crate::theme::Theme::card_frame().show(ui, |ui| {
                                             let btn_label = format!(
                                                 "Page {}: {}",
                                                 res.page_index + 1,
                                                 res.snippet
                                             );
+                                            let btn = if is_selected {
+                                                crate::theme::Theme::accent_button(btn_label)
+                                            } else {
+                                                crate::theme::Theme::secondary_button(btn_label)
+                                            };
                                             if ui
-                                                .add(crate::theme::Theme::secondary_button(
-                                                    btn_label,
-                                                ))
+                                                .add(btn)
+                                                .on_hover_text(
+                                                    "Saltar a este resultado en el documento",
+                                                )
                                                 .clicked()
                                             {
-                                                self.current_page = (res.page_index as usize) + 1;
+                                                nav_idx = Some(res_idx);
                                             }
                                         });
                                         ui.add_space(3.0);
+                                    }
+                                    if let Some(idx) = nav_idx {
+                                        self.navigate_to_search_result(idx);
                                     }
                                 }
                             });
@@ -1712,6 +1819,13 @@ impl KestrelApp {
                                 let (response, painter) =
                                     ui.allocate_painter(Vec2::new(base_width, base_height), sense);
                                 let rect = response.rect;
+
+                                if self.scroll_to_page == Some(page_idx)
+                                    && !self.scroll_to_search_match
+                                {
+                                    response.scroll_to_me(Some(egui::Align::TOP));
+                                    self.scroll_to_page = None;
+                                }
 
                                 // Handle selection operations in SelectText mode
                                 if self.active_tool == ActiveTool::SelectText {
@@ -2067,50 +2181,103 @@ impl KestrelApp {
                                                 let t_x = rect.left() + vx * self.zoom_level;
                                                 let t_y = rect.top() + vy * self.zoom_level;
 
-                                                // Live search visual highlight
-                                                if !self.search_query.trim().is_empty()
-                                                    && tr
-                                                        .text
-                                                        .to_lowercase()
-                                                        .contains(&self.search_query.to_lowercase())
-                                                {
-                                                    let vb =
-                                                        layout.text_run_visual_bounds(tr, page_rot);
-                                                    let hl_rect = egui::Rect::from_min_max(
-                                                        egui::pos2(
-                                                            rect.left() + vb[0] * self.zoom_level
-                                                                - 2.0,
-                                                            rect.top() + vb[1] * self.zoom_level
-                                                                - 1.0,
-                                                        ),
-                                                        egui::pos2(
-                                                            rect.left()
-                                                                + vb[2] * self.zoom_level
-                                                                + 2.0,
-                                                            rect.top()
-                                                                + vb[3] * self.zoom_level
-                                                                + 1.0,
-                                                        ),
-                                                    );
-                                                    painter.rect_filled(
-                                                        hl_rect,
-                                                        2.0,
-                                                        Color32::from_rgba_unmultiplied(
-                                                            255, 235, 59, 140,
-                                                        ),
-                                                    );
+                                                let font_id = egui::FontId::proportional(font_size);
+                                                let eff_rot_deg = (tr.rotation_deg - page_rot as f32).rem_euclid(360.0);
+
+                                                // Live search visual highlight (exact substring bounds, not whole paragraph)
+                                                let query_trimmed = self.search_query.trim();
+                                                if !query_trimmed.is_empty() {
+                                                    let q_lower: Vec<char> = query_trimmed.to_lowercase().chars().collect();
+                                                    let t_chars: Vec<char> = tr.text.chars().collect();
+                                                    let t_lower: Vec<char> = tr.text.to_lowercase().chars().collect();
+
+                                                    if !q_lower.is_empty() && t_lower.len() >= q_lower.len() {
+                                                        let q_len = q_lower.len();
+                                                        for i in 0..=(t_lower.len() - q_len) {
+                                                            if t_lower[i..i + q_len] == q_lower[..] {
+                                                                let prefix: String = t_chars[..i].iter().collect();
+                                                                let matched_text: String = t_chars[i..i + q_len].iter().collect();
+
+                                                                let prefix_w = if prefix.is_empty() {
+                                                                    0.0
+                                                                } else {
+                                                                    painter
+                                                                        .layout_no_wrap(prefix, font_id.clone(), Color32::TRANSPARENT)
+                                                                        .size()
+                                                                        .x
+                                                                };
+                                                                let match_w = painter
+                                                                    .layout_no_wrap(matched_text, font_id.clone(), Color32::TRANSPARENT)
+                                                                    .size()
+                                                                    .x;
+
+                                                                let is_active_result = self.selected_search_result.is_some_and(|sel_idx| {
+                                                                    self.search_results
+                                                                        .get(sel_idx)
+                                                                        .is_some_and(|r| r.page_index as usize == page_idx)
+                                                                });
+
+                                                                let hl_color = if is_active_result {
+                                                                    crate::theme::Theme::SEARCH_HIGHLIGHT_ACTIVE
+                                                                } else {
+                                                                    crate::theme::Theme::SEARCH_HIGHLIGHT_REGULAR
+                                                                };
+
+                                                                if eff_rot_deg.abs() < 1.0 || (eff_rot_deg - 360.0).abs() < 1.0 {
+                                                                    let hl_rect = egui::Rect::from_min_max(
+                                                                        egui::pos2(t_x + prefix_w - 1.5, t_y - 1.0),
+                                                                        egui::pos2(
+                                                                            t_x + prefix_w + match_w + 1.5,
+                                                                            t_y + font_size * 1.15 + 1.0,
+                                                                        ),
+                                                                    );
+                                                                    painter.rect_filled(hl_rect, 2.0, hl_color);
+
+                                                                    if self.scroll_to_search_match && self.scroll_to_page == Some(page_idx) {
+                                                                        ui.scroll_to_rect(hl_rect, Some(egui::Align::Center));
+                                                                        self.scroll_to_search_match = false;
+                                                                        self.scroll_to_page = None;
+                                                                    }
+                                                                } else {
+                                                                    let angle_rad = -eff_rot_deg.to_radians();
+                                                                    let dir = egui::vec2(angle_rad.cos(), angle_rad.sin());
+                                                                    let perp = egui::vec2(-angle_rad.sin(), angle_rad.cos());
+
+                                                                    let p0 = egui::pos2(t_x, t_y) + dir * (prefix_w - 1.5) + perp * (-1.0);
+                                                                    let p1 = egui::pos2(t_x, t_y)
+                                                                        + dir * (prefix_w + match_w + 1.5)
+                                                                        + perp * (-1.0);
+                                                                    let p2 = egui::pos2(t_x, t_y)
+                                                                        + dir * (prefix_w + match_w + 1.5)
+                                                                        + perp * (font_size * 1.15 + 1.0);
+                                                                    let p3 = egui::pos2(t_x, t_y)
+                                                                        + dir * (prefix_w - 1.5)
+                                                                        + perp * (font_size * 1.15 + 1.0);
+
+                                                                    painter.add(egui::Shape::convex_polygon(
+                                                                        vec![p0, p1, p2, p3],
+                                                                        hl_color,
+                                                                        egui::Stroke::NONE,
+                                                                    ));
+
+                                                                    if self.scroll_to_search_match && self.scroll_to_page == Some(page_idx) {
+                                                                        let bbox = egui::Rect::from_two_pos(p0, p2);
+                                                                        ui.scroll_to_rect(bbox, Some(egui::Align::Center));
+                                                                        self.scroll_to_search_match = false;
+                                                                        self.scroll_to_page = None;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                 }
 
-                                                let font_id = egui::FontId::proportional(font_size);
                                                 let color = Color32::from_rgb(
                                                     tr.color[0],
                                                     tr.color[1],
                                                     tr.color[2],
                                                 );
 
-                                                let eff_rot_deg = (tr.rotation_deg
-                                                    - page_rot as f32)
-                                                    .rem_euclid(360.0);
                                                 if eff_rot_deg.abs() < 1.0
                                                     || (eff_rot_deg - 360.0).abs() < 1.0
                                                 {
@@ -2495,6 +2662,12 @@ impl KestrelApp {
                                             }
                                         }
                                     }
+                                }
+
+                                if self.scroll_to_page == Some(page_idx) {
+                                    response.scroll_to_me(Some(egui::Align::TOP));
+                                    self.scroll_to_page = None;
+                                    self.scroll_to_search_match = false;
                                 }
 
                                 ui.label(format!("Page {}", page_idx + 1));
