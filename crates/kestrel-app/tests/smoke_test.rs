@@ -1656,27 +1656,111 @@ fn test_e2e_page_navigator_text_input_jump_and_steppers() {
         "Navigator must display Next stepper"
     );
 
-    // 4. Test direct jump via text input (typing "3")
-    app.set_current_page(3);
-    assert_eq!(app.current_page, 3);
-    assert_eq!(app.page_input_text, "3");
+    // 4. Test direct jump via user entering "3/4" with Enter key
+    app.page_input_text = "3/4".to_string();
+    let mut enter_input = egui::RawInput::default();
+    enter_input.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    let _ = ctx.run(enter_input, |ctx| {
+        app.render_ui(ctx);
+    });
+    assert_eq!(
+        app.current_page, 3,
+        "Typing '3/4' and pressing Enter must jump to page 3"
+    );
+    assert_eq!(
+        app.page_input_text, "3",
+        "page_input_text must normalize to '3'"
+    );
 
-    // 5. Test Stepper Next to page 4
-    app.set_current_page(app.current_page + 1);
-    assert_eq!(app.current_page, 4);
+    // 5. Test entering "2 / 4" with Enter key
+    app.page_input_text = "2 / 4".to_string();
+    let mut enter_input2 = egui::RawInput::default();
+    enter_input2.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    let _ = ctx.run(enter_input2, |ctx| {
+        app.render_ui(ctx);
+    });
+    assert_eq!(
+        app.current_page, 2,
+        "Typing '2 / 4' and pressing Enter must jump to page 2"
+    );
+    assert_eq!(app.page_input_text, "2");
+
+    // 6. Test entering "4 of 4" with Enter key
+    app.page_input_text = "4 of 4".to_string();
+    let mut enter_input3 = egui::RawInput::default();
+    enter_input3.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    let _ = ctx.run(enter_input3, |ctx| {
+        app.render_ui(ctx);
+    });
+    assert_eq!(
+        app.current_page, 4,
+        "Typing '4 of 4' and pressing Enter must jump to page 4"
+    );
     assert_eq!(app.page_input_text, "4");
 
-    // 6. Test clamping on overflow (typing page 999 -> clamped to 4)
-    app.set_current_page(999);
+    // 7. Test clamping on overflow (typing page 999/4 -> clamped to 4)
+    app.page_input_text = "999/4".to_string();
+    let mut enter_overflow = egui::RawInput::default();
+    enter_overflow.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    let _ = ctx.run(enter_overflow, |ctx| {
+        app.render_ui(ctx);
+    });
     assert_eq!(app.current_page, 4, "Page must clamp to total_pages (4)");
     assert_eq!(app.page_input_text, "4");
 
-    // 7. Test clamping on underflow (typing page 0 -> clamped to 1)
-    app.set_current_page(0);
-    assert_eq!(app.current_page, 1, "Page must clamp to minimum (1)");
-    assert_eq!(app.page_input_text, "1");
+    // 8. Test invalid input reverts to current page without jumping
+    app.page_input_text = "invalid_not_a_page".to_string();
+    let mut enter_invalid = egui::RawInput::default();
+    enter_invalid.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    let _ = ctx.run(enter_invalid, |ctx| {
+        app.render_ui(ctx);
+    });
+    assert_eq!(
+        app.current_page, 4,
+        "Invalid input must retain current_page"
+    );
+    assert_eq!(
+        app.page_input_text, "4",
+        "Invalid input must revert to current_page"
+    );
 
-    // 8. Re-render UI frame on page 1
+    // 9. Test Stepper Prev to page 3
+    app.set_current_page(app.current_page.saturating_sub(1));
+    assert_eq!(app.current_page, 3);
+    assert_eq!(app.page_input_text, "3");
+
+    // 10. Re-render UI frame on page 1
+    app.set_current_page(1);
     let out_p1 = ctx.run(egui::RawInput::default(), |ctx| {
         app.render_ui(ctx);
     });
@@ -2195,5 +2279,78 @@ fn test_e2e_exact_word_search_highlight_bounds_not_whole_paragraph() {
         hl_width > 50.0,
         "Highlight width ({}) must cover the searched keyword",
         hl_width
+    );
+}
+
+#[test]
+fn test_parse_page_number_flexible_formats() {
+    use kestrel_app::app::parse_page_number;
+
+    // Fractional formats: "3/4", "3 / 4", " 3/4 ", "3/10"
+    assert_eq!(parse_page_number("3/4"), Some(3));
+    assert_eq!(parse_page_number("3 / 4"), Some(3));
+    assert_eq!(parse_page_number(" 3/4 "), Some(3));
+    assert_eq!(parse_page_number("3/10"), Some(3));
+
+    // Plain integers
+    assert_eq!(parse_page_number("3"), Some(3));
+    assert_eq!(parse_page_number(" 3 "), Some(3));
+    assert_eq!(parse_page_number("42"), Some(42));
+
+    // Natural language fractions
+    assert_eq!(parse_page_number("3 of 4"), Some(3));
+    assert_eq!(parse_page_number("3 de 4"), Some(3));
+
+    // Prefixed notation
+    assert_eq!(parse_page_number("p3"), Some(3));
+    assert_eq!(parse_page_number("p.3"), Some(3));
+    assert_eq!(parse_page_number("p. 3"), Some(3));
+    assert_eq!(parse_page_number("page 3"), Some(3));
+    assert_eq!(parse_page_number("p. 3 / 4"), Some(3));
+    assert_eq!(parse_page_number("#3"), Some(3));
+
+    // Boundary & invalid cases
+    assert_eq!(parse_page_number("0"), Some(0));
+    assert_eq!(parse_page_number(""), None);
+    assert_eq!(parse_page_number("   "), None);
+    assert_eq!(parse_page_number("hello"), None);
+    assert_eq!(parse_page_number("???"), None);
+}
+
+#[test]
+fn test_e2e_page_navigator_viewport_scroll_and_synchronization() {
+    let pdf_bytes = generate_synthetic_search_corpus_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("corpus.pdf".to_string()));
+    assert_eq!(app.total_pages, 3);
+    assert_eq!(app.current_page, 1);
+
+    let ctx = Context::default();
+
+    // 1. Initial render at page 1
+    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+    assert_eq!(app.current_page, 1);
+    assert_eq!(app.page_input_text, "1");
+
+    // 2. Jump to page 3 using "3/3" and Enter
+    app.page_input_text = "3/3".to_string();
+    let mut enter_input = egui::RawInput::default();
+    enter_input.events.push(egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    });
+    let _ = ctx.run(enter_input, |ctx| {
+        app.render_ui(ctx);
+    });
+
+    assert_eq!(app.current_page, 3, "Page must jump to 3");
+    assert_eq!(
+        app.page_input_text, "3",
+        "page_input_text must normalize to '3'"
     );
 }

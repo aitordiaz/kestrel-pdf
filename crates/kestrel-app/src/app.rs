@@ -108,6 +108,7 @@ pub struct KestrelApp {
     pub status_toast: Option<String>,
     pub last_window_title: String,
     pub page_input_text: String,
+    pub page_input_has_focus: bool,
     pub selected_search_result: Option<usize>,
     pub scroll_to_page: Option<usize>,
     pub scroll_to_search_match: bool,
@@ -147,6 +148,7 @@ impl Default for KestrelApp {
             status_toast: None,
             last_window_title: String::new(),
             page_input_text: "1".to_string(),
+            page_input_has_focus: false,
         }
     }
 }
@@ -263,6 +265,53 @@ pub fn is_select_all_shortcut_pressed(input: &egui::InputState) -> bool {
 
     let is_cmd_or_ctrl = input.modifiers.command || input.modifiers.ctrl || input.modifiers.mac_cmd;
     is_cmd_or_ctrl && input.key_pressed(egui::Key::A)
+}
+
+/// Robust parser for user-entered page numbers.
+/// Handles formats like "3", "3/4", "3 / 4", "3 of 4", "3 de 4", "p3", "p.3", "page 3", etc.
+pub fn parse_page_number(input: &str) -> Option<usize> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // Split by '/', '\\', " of ", or " de " to isolate the numerator/target page
+    let page_str = if let Some((first, _)) = s.split_once('/') {
+        first.trim()
+    } else if let Some((first, _)) = s.split_once('\\') {
+        first.trim()
+    } else if let Some((first, _)) = s.split_once(" of ") {
+        first.trim()
+    } else if let Some((first, _)) = s.split_once(" de ") {
+        first.trim()
+    } else {
+        s
+    };
+
+    // Strip non-digit leading characters like "page", "pag", "p.", "p", "#"
+    let page_str = page_str
+        .trim_start_matches(|c: char| {
+            c.is_alphabetic() || c == '.' || c == ' ' || c == '#' || c == ':'
+        })
+        .trim();
+
+    if let Ok(val) = page_str.parse::<usize>() {
+        return Some(val);
+    }
+
+    // Fallback: extract the first contiguous sequence of ASCII digits
+    let digits: String = page_str
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+
+    if !digits.is_empty() {
+        if let Ok(val) = digits.parse::<usize>() {
+            return Some(val);
+        }
+    }
+
+    None
 }
 
 impl KestrelApp {
@@ -837,31 +886,36 @@ impl KestrelApp {
                                 self.set_current_page(self.current_page.saturating_sub(1));
                             }
 
-                            let page_box_w = if is_compact { 30.0 } else { 36.0 };
+                            let page_box_w = if is_compact { 42.0 } else { 54.0 };
                             let page_edit = egui::TextEdit::singleline(&mut self.page_input_text)
+                                .id_source("page_nav_input")
                                 .desired_width(page_box_w)
                                 .font(egui::TextStyle::Monospace)
                                 .horizontal_align(egui::Align::Center);
                             let resp = ui.add(page_edit).on_hover_text(
-                                "Escribe el número de página y pulsa Enter para saltar directamente",
+                                "Escribe el número de página (p. ej. 3 o 3/4) y pulsa Enter para saltar directamente",
                             );
 
+                            self.page_input_has_focus = resp.has_focus();
+
                             let enter_pressed =
-                                resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                            if resp.lost_focus() || enter_pressed {
-                                if let Ok(parsed) = self.page_input_text.trim().parse::<usize>() {
-                                    self.set_current_page(parsed);
+                                ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                            if (resp.has_focus() && enter_pressed)
+                                || resp.lost_focus()
+                                || (enter_pressed
+                                    && parse_page_number(&self.page_input_text)
+                                        != Some(self.current_page))
+                            {
+                                if resp.has_focus() {
+                                    resp.surrender_focus();
+                                }
+                                if let Some(target) = parse_page_number(&self.page_input_text) {
+                                    self.set_current_page(target);
                                 } else {
                                     self.page_input_text = self.current_page.to_string();
                                 }
-                            } else if !resp.has_focus() {
-                                if let Ok(cur) = self.page_input_text.trim().parse::<usize>() {
-                                    if cur != self.current_page {
-                                        self.page_input_text = self.current_page.to_string();
-                                    }
-                                } else {
-                                    self.page_input_text = self.current_page.to_string();
-                                }
+                                ui.ctx().request_repaint();
                             }
 
                             ui.label(
@@ -1823,6 +1877,7 @@ impl KestrelApp {
                                 if self.scroll_to_page == Some(page_idx)
                                     && !self.scroll_to_search_match
                                 {
+                                    ui.scroll_to_rect(rect, Some(egui::Align::TOP));
                                     response.scroll_to_me(Some(egui::Align::TOP));
                                     self.scroll_to_page = None;
                                 }
@@ -2664,7 +2719,8 @@ impl KestrelApp {
                                     }
                                 }
 
-                                if self.scroll_to_page == Some(page_idx) {
+                                 if self.scroll_to_page == Some(page_idx) {
+                                    ui.scroll_to_rect(rect, Some(egui::Align::TOP));
                                     response.scroll_to_me(Some(egui::Align::TOP));
                                     self.scroll_to_page = None;
                                     self.scroll_to_search_match = false;
