@@ -1,8 +1,8 @@
 use egui::{Color32, Context};
 use kestrel_app::app::{
-    is_copy_shortcut_pressed, is_select_all_shortcut_pressed, standard_copy_shortcut_str,
-    standard_select_all_shortcut_str, truncate_filename_middle, ActiveTool, FitMode, KestrelApp,
-    SidebarTab,
+    clamp_rgba_image_to_max_side, is_copy_shortcut_pressed, is_select_all_shortcut_pressed,
+    standard_copy_shortcut_str, standard_select_all_shortcut_str, truncate_filename_middle,
+    ActiveTool, FitMode, KestrelApp, SidebarTab,
 };
 use kestrel_core::synthetic::{
     generate_all_synthetic_stress_tiers, generate_synthetic_forms_pdf,
@@ -1914,4 +1914,166 @@ fn test_e2e_phosphor_icon_font_glyphs_and_typography() {
             emoji
         );
     }
+}
+
+#[test]
+fn test_e2e_responsive_toolbar_modes_at_different_viewport_widths() {
+    let mut app = KestrelApp::default();
+    let doc_bytes = generate_synthetic_visual_showcase_pdf();
+    let test_filename = "enterprise_quarterly_financial_report_audit_signed.pdf";
+    app.load_document_bytes(doc_bytes, Some(test_filename.to_string()));
+
+    // 1. Wide Viewport (1400px width): Full labels rendered
+    let ctx_wide = egui::Context::default();
+    let wide_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1400.0, 900.0),
+        )),
+        ..Default::default()
+    };
+    let wide_out = ctx_wide.run(wide_input, |ctx| {
+        app.render_ui(ctx);
+    });
+    let wide_texts = extract_all_text_from_shapes(&wide_out.shapes);
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Prev")),
+        "Wide viewport must render 'Prev' in page navigator"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Next")),
+        "Wide viewport must render 'Next' in page navigator"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Sign Contract")),
+        "Wide viewport must render 'Sign Contract' in tool ribbon"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Fit Page")),
+        "Wide viewport must render 'Fit Page' in zoom cluster"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Fit Width")),
+        "Wide viewport must render 'Fit Width' in zoom cluster"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Abrir fichero")),
+        "Wide viewport must render 'Abrir fichero' in header CTA"
+    );
+    assert!(
+        wide_texts.iter().any(|t| t.contains("Save / Export")),
+        "Wide viewport must render 'Save / Export' in header CTA"
+    );
+
+    // 2. Medium Viewport (900px width): Compact labels rendered
+    let ctx_med = egui::Context::default();
+    let med_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(900.0, 700.0),
+        )),
+        ..Default::default()
+    };
+    let med_out = ctx_med.run(med_input, |ctx| {
+        app.render_ui(ctx);
+    });
+    let med_texts = extract_all_text_from_shapes(&med_out.shapes);
+    assert!(
+        med_texts.iter().any(|t| t.contains("Sign")),
+        "Medium viewport must render 'Sign' in tool ribbon"
+    );
+    assert!(
+        med_texts.iter().any(|t| t.contains("Fit")),
+        "Medium viewport must render 'Fit' in zoom cluster"
+    );
+
+    // 3. Compact / Half-Screen Viewport (680px width): Iconic mode rendered
+    let ctx_compact = egui::Context::default();
+    let compact_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(680.0, 600.0),
+        )),
+        ..Default::default()
+    };
+    let compact_out = ctx_compact.run(compact_input, |ctx| {
+        app.render_ui(ctx);
+    });
+    let compact_texts = extract_all_text_from_shapes(&compact_out.shapes);
+
+    // All tool icons must be present even in compact mode
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_PAN)),
+        "Compact viewport must render TOOL_PAN icon"
+    );
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_SELECT)),
+        "Compact viewport must render TOOL_SELECT icon"
+    );
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_SIGN)),
+        "Compact viewport must render TOOL_SIGN icon"
+    );
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_FORMS)),
+        "Compact viewport must render TOOL_FORMS icon"
+    );
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_EDIT_TEXT)),
+        "Compact viewport must render TOOL_EDIT_TEXT icon"
+    );
+    assert!(
+        compact_texts
+            .iter()
+            .any(|t| t.contains(kestrel_app::icons::TOOL_REDACT)),
+        "Compact viewport must render TOOL_REDACT icon"
+    );
+    assert!(
+        compact_texts.iter().any(|t| t.contains("Abrir")),
+        "Compact viewport must render compact 'Abrir' CTA"
+    );
+    assert!(
+        compact_texts.iter().any(|t| t.contains("Save")),
+        "Compact viewport must render compact 'Save' CTA"
+    );
+}
+
+#[test]
+fn test_clamp_rgba_image_to_max_side_and_texture_safety() {
+    // 1. Image already within bounds -> returns borrowed Cow with original dimensions
+    let small_rgba = vec![255u8; 100 * 50 * 4];
+    let (w, h, cow) = clamp_rgba_image_to_max_side(100, 50, &small_rgba, 2048);
+    assert_eq!(w, 100);
+    assert_eq!(h, 50);
+    assert!(matches!(cow, std::borrow::Cow::Borrowed(_)));
+
+    // 2. High-resolution tile (e.g. 2976 x 4209 at 500% zoom) exceeding 2048 max texture side
+    let large_w = 2976;
+    let large_h = 4209;
+    let large_rgba = vec![128u8; large_w * large_h * 4];
+    let (clamped_w, clamped_h, clamped_cow) =
+        clamp_rgba_image_to_max_side(large_w, large_h, &large_rgba, 2048);
+
+    assert!(clamped_w <= 2048, "Width {} must be <= 2048", clamped_w);
+    assert!(clamped_h <= 2048, "Height {} must be <= 2048", clamped_h);
+    assert_eq!(clamped_h, 2048);
+    assert_eq!(clamped_w, 1448);
+    assert_eq!(clamped_cow.len(), clamped_w * clamped_h * 4);
+    assert!(matches!(clamped_cow, std::borrow::Cow::Owned(_)));
+
+    // 3. Confirm loading into egui Context with 2048 limit does not panic
+    let ctx = egui::Context::default();
+    let img = egui::ColorImage::from_rgba_unmultiplied([clamped_w, clamped_h], &clamped_cow);
+    let handle = ctx.load_texture("safe_clamped_tile", img, egui::TextureOptions::LINEAR);
+    assert_eq!(handle.size(), [clamped_w, clamped_h]);
 }
