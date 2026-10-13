@@ -105,11 +105,11 @@ sequenceDiagram
      ```bash
      gh pr checks <PR_NUMBER> --watch=false
      ```
-   - Active CI checks must pass (Linux and WASM compilation temporarily disabled to optimize pipeline runtime and resource usage):
+   - Active CI checks must pass (Linux, macOS, and WASM compilation temporarily disabled to optimize pipeline runtime and resource usage):
      - Lint & Formatting
-     - Integration Tests (windows-latest, macos-latest)
-     - E2E Smoke Tests (windows-latest, macos-latest)
-     *(WebAssembly check and Linux test jobs disabled until Web/Linux apps are finalized)*
+     - Integration Tests (windows-latest)
+     - E2E Smoke Tests (windows-latest)
+     *(WebAssembly check, Linux, and macOS test jobs disabled until those desktop/web apps are finalized)*
 
 5. **Merge to `main`**:
    - Merge cleanly into `main`:
@@ -129,8 +129,7 @@ sequenceDiagram
      ```
    - This triggers `.github/workflows/release.yml`, building native release binaries:
      - `kestrel-pdf-windows-x64.exe` (Windows x64 MSVC)
-     - `kestrel-pdf-macos-arm64` (macOS Apple Silicon)
-     *(Linux binary compilation temporarily disabled until Linux desktop app is finalized)*
+     *(Linux and macOS binary compilation temporarily disabled until desktop apps are finalized)*
    - Monitor the run via `gh run view <RUN_ID>` and confirm the GitHub Release is published.
 
 ---

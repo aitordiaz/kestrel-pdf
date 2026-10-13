@@ -42,8 +42,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Linux (ubuntu-latest) compilation disabled until Linux desktop app is finalized
-        os: [windows-latest, macos-latest]
+        # Linux and macOS compilation disabled to optimize pipeline runtime and resource usage
+        os: [windows-latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -64,8 +64,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Linux (ubuntu-latest) compilation disabled until Linux desktop app is finalized
-        os: [windows-latest, macos-latest]
+        # Linux and macOS compilation disabled to optimize pipeline runtime and resource usage
+        os: [windows-latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
