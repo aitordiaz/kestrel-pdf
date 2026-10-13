@@ -3,7 +3,7 @@
 - **Date**: 2026-10-13
 - **Author**: Antigravity (AI Pair Programmer)
 - **Active Version**: v0.3.2
-- **Active Branch**: `feat/digital-certificate-signature-and-home-open-box`
+- **Active Branch**: `main` (Merged PR #32, Tag `v0.3.2` published)
 
 ---
 
