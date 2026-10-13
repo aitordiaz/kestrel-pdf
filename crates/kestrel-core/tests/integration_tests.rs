@@ -893,11 +893,32 @@ fn test_integration_synthetic_search_corpus_multi_page() {
     assert_eq!(res1[0].page_index, 1);
     assert_eq!(res1[0].match_count, 1);
 
-    // Multi-occurrence search on Page 1
+    // Multi-occurrence search on Page 1: returns all individual occurrences
     let res_multi = session.search_text("KEYWORD_MULTI_OCCURRENCE");
-    assert_eq!(res_multi.len(), 1);
+    assert_eq!(
+        res_multi.len(),
+        2,
+        "Should return each individual occurrence"
+    );
     assert_eq!(res_multi[0].page_index, 1);
+    assert_eq!(res_multi[0].match_index_in_page, 0);
+    assert_eq!(res_multi[0].global_match_index, 0);
     assert_eq!(res_multi[0].match_count, 2);
+    assert!(
+        res_multi[0].snippet.contains("first mention"),
+        "Snippet must contain context before/after: got '{}'",
+        res_multi[0].snippet
+    );
+
+    assert_eq!(res_multi[1].page_index, 1);
+    assert_eq!(res_multi[1].match_index_in_page, 1);
+    assert_eq!(res_multi[1].global_match_index, 1);
+    assert_eq!(res_multi[1].match_count, 2);
+    assert!(
+        res_multi[1].snippet.contains("second mention"),
+        "Snippet must contain context before/after: got '{}'",
+        res_multi[1].snippet
+    );
 
     // Search Page 2 unique token & Spanish term
     let res2 = session.search_text("GAMMA_IBAN_SPANISH_ES91");

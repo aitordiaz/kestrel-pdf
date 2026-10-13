@@ -591,7 +591,7 @@ fn test_e2e_multi_page_search_navigation_and_visual_highlighting() {
     });
 
     let texts1 = extract_all_text_from_shapes(&output1.shapes);
-    assert!(texts1.iter().any(|t| t.contains("Found 1 matching pages:")));
+    assert!(texts1.iter().any(|t| t.contains("Coincidencias")));
     assert!(texts1.iter().any(|t| t.contains("ALPHA_SEARCH_TOKEN_42")));
 
     // Assert visual highlight rectangle is rendered with search highlight color
@@ -2280,6 +2280,92 @@ fn test_e2e_exact_word_search_highlight_bounds_not_whole_paragraph() {
         "Highlight width ({}) must cover the searched keyword",
         hl_width
     );
+}
+
+#[test]
+fn test_e2e_search_multi_occurrence_sidebar_and_active_highlight_distinction() {
+    let pdf_bytes = generate_synthetic_search_corpus_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("search_corpus.pdf".to_string()));
+
+    // Search keyword that occurs twice on Page 2 (index 1)
+    app.search_query = "KEYWORD_MULTI_OCCURRENCE".to_string();
+    app.execute_search();
+
+    assert_eq!(
+        app.search_results.len(),
+        2,
+        "Search must return all individual occurrences (found 2)"
+    );
+    assert_eq!(app.sidebar_tab, SidebarTab::SearchResults);
+    assert!(app.sidebar_open);
+    assert_eq!(app.selected_search_result, Some(0));
+
+    // Verify first occurrence details
+    let occ0 = &app.search_results[0];
+    assert_eq!(occ0.page_index, 1);
+    assert_eq!(occ0.match_index_in_page, 0);
+    assert_eq!(occ0.global_match_index, 0);
+    assert!(occ0.snippet.contains("first mention"));
+
+    // Verify second occurrence details
+    let occ1 = &app.search_results[1];
+    assert_eq!(occ1.page_index, 1);
+    assert_eq!(occ1.match_index_in_page, 1);
+    assert_eq!(occ1.global_match_index, 1);
+    assert!(occ1.snippet.contains("second mention"));
+
+    // Render frame for occurrence 0
+    let ctx = Context::default();
+    let out0 = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+
+    let active_hl0 = find_rects_with_fill(&out0.shapes, Theme::SEARCH_HIGHLIGHT_ACTIVE);
+    let regular_hl0 = find_rects_with_fill(&out0.shapes, Theme::SEARCH_HIGHLIGHT_REGULAR);
+    assert_eq!(
+        active_hl0.len(),
+        1,
+        "Must highlight exactly 1 active occurrence in active color"
+    );
+    assert!(
+        !regular_hl0.is_empty(),
+        "Other occurrences on the page must be highlighted in regular color"
+    );
+
+    let occ0_y = active_hl0[0].center().y;
+
+    // Advance to occurrence 1
+    app.next_search_result();
+    assert_eq!(app.selected_search_result, Some(1));
+
+    let out1 = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+
+    let active_hl1 = find_rects_with_fill(&out1.shapes, Theme::SEARCH_HIGHLIGHT_ACTIVE);
+    assert_eq!(
+        active_hl1.len(),
+        1,
+        "Must highlight occurrence 1 in active color"
+    );
+    let occ1_y = active_hl1[0].center().y;
+
+    // Occurrence 1 is below occurrence 0 on the page, so its visual Y must be greater
+    assert!(
+        occ1_y > occ0_y,
+        "Occurrence 1 must be positioned below occurrence 0 visually: occ0_y={}, occ1_y={}",
+        occ0_y,
+        occ1_y
+    );
+
+    // Test circular cycling: next returns to occurrence 0
+    app.next_search_result();
+    assert_eq!(app.selected_search_result, Some(0));
+
+    // Previous cycles to occurrence 1
+    app.prev_search_result();
+    assert_eq!(app.selected_search_result, Some(1));
 }
 
 #[test]
