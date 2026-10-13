@@ -42,7 +42,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Linux (ubuntu-latest) compilation disabled until Linux desktop app is finalized
+        os: [windows-latest, macos-latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -63,7 +64,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Linux (ubuntu-latest) compilation disabled until Linux desktop app is finalized
+        os: [windows-latest, macos-latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -77,21 +79,22 @@ jobs:
       - name: Run End-to-End Smoke Test
         run: cargo test --workspace --test smoke_test -- --nocapture
 
-  wasm-target-check:
-    name: WebAssembly Build Check
-    runs-on: ubuntu-latest
-    needs: [lint-and-format]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install Rust toolchain with WASM target
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check WASM Compilation
-        run: cargo check -p kestrel-app --target wasm32-unknown-unknown
+  # WebAssembly build check disabled until Web app is finalized
+  # wasm-target-check:
+  #   name: WebAssembly Build Check
+  #   runs-on: ubuntu-latest
+  #   needs: [lint-and-format]
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v7
+  #
+  #     - name: Install Rust toolchain with WASM target
+  #       uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         targets: wasm32-unknown-unknown
+  #
+  #     - name: Rust Cache
+  #       uses: Swatinem/rust-cache@v2
+  #
+  #     - name: Check WASM Compilation
+  #       run: cargo check -p kestrel-app --target wasm32-unknown-unknown

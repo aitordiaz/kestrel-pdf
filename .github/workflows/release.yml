@@ -30,10 +30,11 @@ jobs:
             target: aarch64-apple-darwin
             artifact_name: kestrel-pdf-macos-arm64
             binary_path: target/aarch64-apple-darwin/release/kestrel-app
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: kestrel-pdf-linux-x64
-            binary_path: target/x86_64-unknown-linux-gnu/release/kestrel-app
+          # Linux compilation disabled until Linux desktop app is finalized
+          # - os: ubuntu-latest
+          #   target: x86_64-unknown-linux-gnu
+          #   artifact_name: kestrel-pdf-linux-x64
+          #   binary_path: target/x86_64-unknown-linux-gnu/release/kestrel-app
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
