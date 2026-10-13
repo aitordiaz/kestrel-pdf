@@ -332,6 +332,67 @@ fn test_integration_pades_digital_signature_embedding_and_verification() {
 }
 
 #[test]
+fn test_integration_digital_signature_custom_rect_and_page() {
+    use kestrel_core::sign::{self, DigitalSignatureMeta};
+    use kestrel_core::synthetic::generate_synthetic_search_corpus_pdf;
+
+    let base_pdf = generate_synthetic_search_corpus_pdf();
+    let mut session = DocumentSession::open_from_bytes(base_pdf, None).expect("Open session");
+
+    let mut meta = DigitalSignatureMeta::new("Antonio Pérez Martínez");
+    meta.signer_id = Some("12345678Z".to_string());
+    meta.issuer = Some("FNMT-RCM AC Usuarios".to_string());
+    meta.target_page = 1;
+    meta.rect = [120.0, 220.0, 320.0, 300.0];
+    meta.reason = Some("Firma con Certificado Digital".to_string());
+    meta.location = Some("Madrid, España".to_string());
+    session.set_digital_signature(meta);
+
+    let signed_bytes = session.save_to_bytes().expect("Save signed PDF");
+    let parsed_doc = Document::load_mem(&signed_bytes).expect("Parse signed PDF");
+
+    let fingerprint = session
+        .digital_signature
+        .as_ref()
+        .unwrap()
+        .sha256_fingerprint
+        .clone();
+    assert!(!fingerprint.is_empty());
+    assert!(sign::verify_signature(&parsed_doc, &fingerprint));
+
+    let pages = parsed_doc.get_pages();
+    let p1_id = pages.get(&2).expect("Page 2 (index 1) exists");
+    let p1_dict = parsed_doc.get_object(*p1_id).unwrap().as_dict().unwrap();
+    let annots = p1_dict.get(b"Annots").unwrap().as_array().unwrap();
+    assert!(!annots.is_empty(), "Page 1 must have annotations");
+
+    let widget_ref = annots.last().unwrap().as_reference().unwrap();
+    let widget_dict = parsed_doc
+        .get_object(widget_ref)
+        .unwrap()
+        .as_dict()
+        .unwrap();
+    assert_eq!(
+        widget_dict.get(b"Subtype").unwrap().as_name_str().unwrap(),
+        "Widget"
+    );
+    assert_eq!(
+        widget_dict.get(b"FT").unwrap().as_name_str().unwrap(),
+        "Sig"
+    );
+
+    let rect_arr = widget_dict.get(b"Rect").unwrap().as_array().unwrap();
+    let r0 = rect_arr[0].as_float().unwrap();
+    let r1 = rect_arr[1].as_float().unwrap();
+    let r2 = rect_arr[2].as_float().unwrap();
+    let r3 = rect_arr[3].as_float().unwrap();
+    assert_eq!(r0, 120.0);
+    assert_eq!(r1, 220.0);
+    assert_eq!(r2, 320.0);
+    assert_eq!(r3, 300.0);
+}
+
+#[test]
 fn test_integration_identity_h_and_tounicode_cmap_extraction() {
     let mut doc = Document::with_version("1.7");
     let pages_id = doc.new_object_id();

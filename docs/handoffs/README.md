@@ -29,6 +29,7 @@ When an AI agent or engineer pauses work or transfers context to another agent, 
 | **[0017](0017-disable-linux-and-web-ci-compilation.md)** | [Temporary Disabling of Linux and WebAssembly CI/Release Compilation](0017-disable-linux-and-web-ci-compilation.md) | v0.3.0 | 2026-10-13 | **Completed** | Disabled Linux and WASM compilation in CI and Release workflows to speed up pipeline and save runner resources. |
 | **[0018](0018-disable-macos-ci-compilation.md)** | [Temporary Disabling of macOS CI/Release Compilation](0018-disable-macos-ci-compilation.md) | v0.3.0 | 2026-10-13 | **Completed** | Disabled macOS compilation in CI and Release workflows, leaving windows-latest as sole active target. |
 | **[0019](0019-search-individual-occurrences-and-counter.md)** | [Individual Search Occurrences, Active Context Snippets & Document Counter Badge](0019-search-individual-occurrences-and-counter.md) | v0.3.1 | 2026-10-13 | **Completed** | 68 automated tests passing, individual search match occurrences, context snippets, active styling, X/N counter badge, arrow navigation. |
+| **[0020](0020-digital-certificate-signature-and-home-open-box.md)** | [Digital Certificate Signatures with Visual Area Selection & Centered Start Screen Hero Box](0020-digital-certificate-signature-and-home-open-box.md) | v0.3.2 | 2026-10-13 | **Completed** | 71 automated tests passing, digital certificate signing with visual area selection, PAdES appearance stream, and centered separated open file hero box. |
 
 
 ---

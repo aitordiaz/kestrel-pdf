@@ -120,6 +120,18 @@ pub struct KestrelApp {
     pub scroll_to_page: Option<usize>,
     pub scroll_to_search_match: bool,
 
+    // Digital Certificate Signature with Area Selection
+    pub digital_signature_modal_open: bool,
+    pub digital_signature_selecting_rect: bool,
+    pub digital_signature_target_page: usize,
+    pub digital_signature_rect: [f32; 4],
+    pub digital_signature_drag_start: Option<egui::Pos2>,
+    pub digital_signature_drag_current: Option<egui::Pos2>,
+    pub signer_id_input: String,
+    pub signer_issuer_input: String,
+    pub signature_location_input: String,
+    pub selected_certificate_path: Option<String>,
+
     // Phase 3: In-Place Text & Image Editing State
     pub editing_text_modal_open: bool,
     pub editing_text_page: usize,
@@ -165,6 +177,18 @@ impl Default for KestrelApp {
             last_window_title: String::new(),
             page_input_text: "1".to_string(),
             page_input_has_focus: false,
+
+            // Digital Certificate defaults
+            digital_signature_modal_open: false,
+            digital_signature_selecting_rect: false,
+            digital_signature_target_page: 0,
+            digital_signature_rect: [50.0, 50.0, 250.0, 110.0],
+            digital_signature_drag_start: None,
+            digital_signature_drag_current: None,
+            signer_id_input: "12345678Z".to_string(),
+            signer_issuer_input: "FNMT-RCM AC Usuarios".to_string(),
+            signature_location_input: "Madrid, España".to_string(),
+            selected_certificate_path: None,
 
             // Phase 3 editing defaults
             editing_text_modal_open: false,
@@ -558,6 +582,84 @@ impl KestrelApp {
 
                 self.status_toast = Some(format!("Signature stamped on Page {}", page_index + 1));
             }
+        }
+    }
+
+    /// Enters interactive rectangular area selection on document page for digital certificate signature.
+    pub fn start_digital_signature_box_selection(&mut self) {
+        self.active_tool = ActiveTool::SignContract;
+        self.digital_signature_selecting_rect = true;
+        self.digital_signature_modal_open = false;
+        self.status_toast = Some(
+            "Haz clic y arrastra un recuadro en la página para ubicar la firma con certificado digital"
+                .to_string(),
+        );
+    }
+
+    /// Opens the digital certificate signature modal dialog.
+    pub fn open_digital_signature_dialog(&mut self) {
+        self.digital_signature_selecting_rect = false;
+        self.digital_signature_modal_open = true;
+    }
+
+    /// Applies digital certificate signature to the session with current metadata and target rect.
+    pub fn apply_digital_certificate_signature(&mut self) -> bool {
+        if let Some(session) = &mut self.session {
+            let mut meta = DigitalSignatureMeta::new(&self.signer_name_input);
+            meta.signer_id = if self.signer_id_input.trim().is_empty() {
+                None
+            } else {
+                Some(self.signer_id_input.trim().to_string())
+            };
+            meta.issuer = if self.signer_issuer_input.trim().is_empty() {
+                None
+            } else {
+                Some(self.signer_issuer_input.trim().to_string())
+            };
+            meta.location = if self.signature_location_input.trim().is_empty() {
+                None
+            } else {
+                Some(self.signature_location_input.trim().to_string())
+            };
+            meta.reason = if self.signature_reason_input.trim().is_empty() {
+                None
+            } else {
+                Some(self.signature_reason_input.trim().to_string())
+            };
+            meta.target_page = self.digital_signature_target_page as u16;
+            meta.rect = self.digital_signature_rect;
+            meta.certificate_file = self.selected_certificate_path.clone();
+
+            session.set_digital_signature(meta);
+            self.digital_signature_modal_open = false;
+            self.digital_signature_selecting_rect = false;
+            self.status_toast = Some(format!(
+                "Documento firmado con certificado digital en la página {}",
+                self.digital_signature_target_page + 1
+            ));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Prompts file dialog to pick a certificate file (.p12, .pfx, .crt, .cer, .pem).
+    pub fn pick_certificate_file_dialog(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Certificados Digitales",
+                &["p12", "pfx", "crt", "cer", "pem"],
+            )
+            .pick_file()
+        {
+            let path_str = path.to_string_lossy().to_string();
+            let fname = path
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| path_str.clone());
+            self.selected_certificate_path = Some(path_str);
+            self.status_toast = Some(format!("Certificado seleccionado: {}", fname));
         }
     }
 
@@ -1453,20 +1555,51 @@ impl KestrelApp {
                         }
 
                         if sign_active {
-                            let create_sig_label = if is_compact {
+                            let pad_sig_label = if is_compact {
                                 crate::icons::TOOL_SIGN.to_string()
                             } else {
-                                format!("{} Create Signature", crate::icons::TOOL_SIGN)
+                                format!("{} Dibujar Firma", crate::icons::TOOL_SIGN)
                             };
                             if ui
                                 .add(
-                                    crate::theme::Theme::accent_button(create_sig_label)
+                                    crate::theme::Theme::secondary_button(pad_sig_label)
                                         .min_size(Vec2::new(0.0, 24.0)),
                                 )
-                                .on_hover_text("Open Signature Pad")
+                                .on_hover_text("Abrir panel para dibujar firma manuscrita")
                                 .clicked()
                             {
                                 self.signature_modal_open = true;
+                            }
+
+                            let cert_sig_label = if is_compact {
+                                crate::icons::CERTIFICATE.to_string()
+                            } else {
+                                format!("{} Certificado Digital", crate::icons::CERTIFICATE)
+                            };
+                            if ui
+                                .add(
+                                    crate::theme::Theme::accent_button(cert_sig_label)
+                                        .min_size(Vec2::new(0.0, 24.0)),
+                                )
+                                .on_hover_text("Firmar con certificado digital seleccionando un recuadro en la página")
+                                .clicked()
+                            {
+                                self.start_digital_signature_box_selection();
+                            }
+
+                            if self.digital_signature_selecting_rect
+                                && ui
+                                    .add(
+                                        crate::theme::Theme::secondary_button(format!(
+                                            "{} Cancelar recuadro",
+                                            crate::icons::CLOSE
+                                        ))
+                                        .min_size(Vec2::new(0.0, 24.0)),
+                                    )
+                                    .on_hover_text("Cancelar selección de recuadro")
+                                    .clicked()
+                            {
+                                self.digital_signature_selecting_rect = false;
                             }
                         }
 
@@ -2242,77 +2375,117 @@ impl KestrelApp {
             .show(ctx, |ui| {
             if self.total_pages == 0 {
                 ui.centered_and_justified(|ui| {
-                    egui::Frame::group(ui.style())
-                        .fill(crate::theme::Theme::PANEL_SURFACE)
-                        .stroke(egui::Stroke::new(1.0_f32, crate::theme::Theme::BORDER_DARK))
-                        .rounding(12.0)
-                        .inner_margin(egui::Margin::same(36.0))
-                        .show(ui, |ui| {
-                            ui.set_max_width(440.0);
-                            ui.vertical_centered(|ui| {
-                                ui.label(
-                                    egui::RichText::new(crate::icons::APP_LOGO)
-                                        .color(crate::theme::Theme::ACCENT_SALMON)
-                                        .size(54.0),
-                                );
-                                ui.add_space(8.0);
-                                ui.heading(
-                                    egui::RichText::new("Kestrel-PDF")
+                    ui.vertical_centered(|ui| {
+                        // 1. Floating branding header (outside the box)
+                        ui.add_space(20.0);
+                        ui.label(
+                            egui::RichText::new(crate::icons::APP_LOGO)
+                                .color(crate::theme::Theme::ACCENT_SALMON)
+                                .size(56.0),
+                        );
+                        ui.add_space(8.0);
+                        ui.heading(
+                            egui::RichText::new("Kestrel-PDF")
+                                .color(Color32::WHITE)
+                                .strong()
+                                .size(24.0),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Lector y editor de PDF universal de ultra-alto rendimiento",
+                            )
+                            .color(crate::theme::Theme::TEXT_MUTED)
+                            .size(13.0),
+                        );
+                        ui.add_space(32.0);
+
+                        // 2. Dedicated Centered Hero Box for "Abrir Fichero"
+                        egui::Frame::none()
+                            .fill(crate::theme::Theme::PANEL_SURFACE)
+                            .stroke(egui::Stroke::new(1.0_f32, crate::theme::Theme::BORDER_DARK))
+                            .rounding(14.0)
+                            .inner_margin(egui::Margin::symmetric(36.0, 32.0))
+                            .show(ui, |ui| {
+                                ui.set_max_width(450.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(crate::icons::OPEN_FILE)
+                                            .color(crate::theme::Theme::ACCENT_SALMON)
+                                            .size(36.0),
+                                    );
+                                    ui.add_space(14.0);
+
+                                    let big_open_btn = egui::Button::new(
+                                        egui::RichText::new(format!(
+                                            "{}  Abrir fichero PDF",
+                                            crate::icons::OPEN_FILE
+                                        ))
                                         .color(Color32::WHITE)
                                         .strong()
-                                        .size(22.0),
-                                );
-                                ui.add_space(4.0);
-                                ui.label(
-                                    egui::RichText::new(
-                                        "Lector y editor de PDF universal de ultra-alto rendimiento",
+                                        .size(15.0),
                                     )
-                                    .color(crate::theme::Theme::TEXT_MUTED)
-                                    .size(13.0),
-                                );
-                                ui.add_space(28.0);
+                                    .fill(crate::theme::Theme::ACCENT_SALMON)
+                                    .rounding(8.0)
+                                    .min_size(Vec2::new(240.0, 44.0));
 
-                                let big_open_btn = egui::Button::new(
-                                    egui::RichText::new(format!(
-                                        "{}  Abrir fichero PDF",
-                                        crate::icons::OPEN_FILE
-                                    ))
-                                    .color(Color32::WHITE)
-                                    .strong()
-                                    .size(15.0),
-                                )
-                                .fill(crate::theme::Theme::ACCENT_SALMON)
-                                .rounding(8.0)
-                                .min_size(Vec2::new(220.0, 42.0));
-
-                                if ui
-                                    .add(big_open_btn)
-                                    .on_hover_text(
-                                        "Selecciona un documento PDF para abrir (Ctrl+O / Cmd+O)",
-                                    )
-                                    .clicked()
-                                {
-                                    #[cfg(not(target_arch = "wasm32"))]
-                                    if let Some(path) = rfd::FileDialog::new()
-                                        .add_filter("PDF Documents", &["pdf"])
-                                        .pick_file()
+                                    if ui
+                                        .add(big_open_btn)
+                                        .on_hover_text(
+                                            "Selecciona un documento PDF para abrir (Ctrl+O / Cmd+O)",
+                                        )
+                                        .clicked()
                                     {
-                                        if let Ok(bytes) = std::fs::read(&path) {
-                                            let name =
-                                                path.file_name().map(|n| n.to_string_lossy().to_string());
-                                            self.load_document_bytes(bytes, name);
+                                        #[cfg(not(target_arch = "wasm32"))]
+                                        if let Some(path) = rfd::FileDialog::new()
+                                            .add_filter("PDF Documents", &["pdf"])
+                                            .pick_file()
+                                        {
+                                            if let Ok(bytes) = std::fs::read(&path) {
+                                                let name = path
+                                                    .file_name()
+                                                    .map(|n| n.to_string_lossy().to_string());
+                                                self.load_document_bytes(bytes, name);
+                                            }
                                         }
                                     }
-                                }
 
-                                ui.add_space(12.0);
-                                ui.label(
-                                    egui::RichText::new("o arrastra y suelta tu archivo PDF aquí")
-                                        .color(Color32::from_rgb(100, 116, 139))
-                                        .size(12.0),
-                                );
+                                    ui.add_space(14.0);
+                                    ui.label(
+                                        egui::RichText::new("o arrastra y suelta tu archivo PDF aquí")
+                                            .color(crate::theme::Theme::TEXT_MUTED)
+                                            .size(12.5),
+                                    );
+                                    ui.add_space(10.0);
+                                    crate::theme::Theme::pill_frame().show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new("Atajo: Ctrl+O  /  Cmd+O")
+                                                .color(crate::theme::Theme::TEXT_MUTED)
+                                                .font(egui::FontId::monospace(11.0)),
+                                        );
+                                    });
+                                });
                             });
+
+                        ui.add_space(28.0);
+                        ui.horizontal(|ui| {
+                            let badges = [
+                                "⚡ Rendimiento Nativo",
+                                "🔒 Firma Digital PAdES",
+                                "✏ Edición En-Sitio",
+                                "🛡 100% Offline y Seguro",
+                            ];
+                            for badge in badges {
+                                crate::theme::Theme::pill_frame().show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(badge)
+                                            .color(crate::theme::Theme::TEXT_MUTED)
+                                            .size(11.0),
+                                    );
+                                });
+                            }
                         });
+                    });
                 });
             } else {
                 // Apply pending Fit Width / Fit Page if requested
@@ -2407,6 +2580,7 @@ impl KestrelApp {
                                 // Render Page Card with drop-shadow border
                                 ui.add_space(16.0);
                                 let sense = if self.active_tool == ActiveTool::SignContract
+                                    || self.digital_signature_selecting_rect
                                     || self.active_tool == ActiveTool::FormFill
                                     || self.active_tool == ActiveTool::SelectText
                                     || self.active_tool == ActiveTool::EditText
@@ -2691,8 +2865,122 @@ impl KestrelApp {
                                     }
                                 }
 
-                                // Handle placing signature when clicking in SignContract mode
-                                if self.active_tool == ActiveTool::SignContract
+                                // Handle digital signature area selection or placing signature in SignContract mode
+                                if self.digital_signature_selecting_rect {
+                                    if response.hovered() {
+                                        ui.output_mut(|o| {
+                                            o.cursor_icon = egui::CursorIcon::Crosshair
+                                        });
+                                    }
+
+                                    if response.drag_started() {
+                                        self.digital_signature_target_page = page_idx;
+                                        self.digital_signature_drag_start = response.interact_pointer_pos();
+                                        self.digital_signature_drag_current = response.interact_pointer_pos();
+                                    }
+
+                                    if response.dragged()
+                                        && self.digital_signature_target_page == page_idx
+                                    {
+                                        self.digital_signature_drag_current = response.interact_pointer_pos();
+                                    }
+
+                                    if response.drag_stopped()
+                                        && self.digital_signature_target_page == page_idx
+                                    {
+                                        if let (Some(start), Some(curr)) = (
+                                            self.digital_signature_drag_start.take(),
+                                            self.digital_signature_drag_current.take(),
+                                        ) {
+                                            let p_min_x = start.x.min(curr.x);
+                                            let p_max_x = start.x.max(curr.x);
+                                            let p_min_y = start.y.min(curr.y);
+                                            let p_max_y = start.y.max(curr.y);
+
+                                            let (orig_w, orig_h) = self
+                                                .session
+                                                .as_ref()
+                                                .and_then(|s| s.pages.get(page_idx))
+                                                .map(|p| (p.width_pt, p.height_pt))
+                                                .unwrap_or((595.28, 841.89));
+
+                                            let (box_min_x, box_min_y, box_max_x, box_max_y) =
+                                                if (p_max_x - p_min_x).abs() < 12.0
+                                                    && (p_max_y - p_min_y).abs() < 12.0
+                                                {
+                                                    // Single click: center default 200x80 box at click point
+                                                    let click_vx =
+                                                        (start.x - rect.left()) / self.zoom_level;
+                                                    let click_vy =
+                                                        (start.y - rect.top()) / self.zoom_level;
+                                                    let w = 200.0_f32;
+                                                    let h = 80.0_f32;
+                                                    let min_vx = (click_vx - w / 2.0).clamp(0.0, (orig_w - w).max(0.0));
+                                                    let min_vy = (click_vy - h / 2.0).clamp(0.0, (orig_h - h).max(0.0));
+                                                    let pdf_y1 = orig_h - (min_vy + h);
+                                                    let pdf_y2 = orig_h - min_vy;
+                                                    (min_vx, pdf_y1, min_vx + w, pdf_y2)
+                                                } else {
+                                                    let min_vx = ((p_min_x - rect.left()) / self.zoom_level)
+                                                        .clamp(0.0, orig_w);
+                                                    let max_vx = ((p_max_x - rect.left()) / self.zoom_level)
+                                                        .clamp(0.0, orig_w);
+                                                    let min_vy = ((p_min_y - rect.top()) / self.zoom_level)
+                                                        .clamp(0.0, orig_h);
+                                                    let max_vy = ((p_max_y - rect.top()) / self.zoom_level)
+                                                        .clamp(0.0, orig_h);
+
+                                                    let w = (max_vx - min_vx).max(60.0);
+                                                    let h = (max_vy - min_vy).max(25.0);
+                                                    let pdf_y1 = orig_h - (min_vy + h);
+                                                    let pdf_y2 = orig_h - min_vy;
+                                                    (min_vx, pdf_y1, min_vx + w, pdf_y2)
+                                                };
+
+                                            self.digital_signature_rect =
+                                                [box_min_x, box_min_y, box_max_x, box_max_y];
+                                            self.digital_signature_target_page = page_idx;
+                                            self.digital_signature_selecting_rect = false;
+                                            self.digital_signature_modal_open = true;
+                                            self.status_toast = Some(format!(
+                                                "Área de firma fijada en página {} [{:.0}×{:.0} pt]",
+                                                page_idx + 1,
+                                                (box_max_x - box_min_x).abs(),
+                                                (box_max_y - box_min_y).abs()
+                                            ));
+                                        }
+                                    } else if response.clicked() {
+                                        if let Some(pos) = response.hover_pos() {
+                                            let (orig_w, orig_h) = self
+                                                .session
+                                                .as_ref()
+                                                .and_then(|s| s.pages.get(page_idx))
+                                                .map(|p| (p.width_pt, p.height_pt))
+                                                .unwrap_or((595.28, 841.89));
+                                            let click_vx = (pos.x - rect.left()) / self.zoom_level;
+                                            let click_vy = (pos.y - rect.top()) / self.zoom_level;
+                                            let w = 200.0_f32;
+                                            let h = 80.0_f32;
+                                            let min_vx = (click_vx - w / 2.0).clamp(0.0, (orig_w - w).max(0.0));
+                                            let min_vy = (click_vy - h / 2.0).clamp(0.0, (orig_h - h).max(0.0));
+                                            let pdf_y1 = orig_h - (min_vy + h);
+                                            let pdf_y2 = orig_h - min_vy;
+
+                                            self.digital_signature_rect = [min_vx, pdf_y1, min_vx + w, pdf_y2];
+                                            self.digital_signature_target_page = page_idx;
+                                            self.digital_signature_selecting_rect = false;
+                                            self.digital_signature_drag_start = None;
+                                            self.digital_signature_drag_current = None;
+                                            self.digital_signature_modal_open = true;
+                                            self.status_toast = Some(format!(
+                                                "Área de firma fijada en página {} [{:.0}×{:.0} pt]",
+                                                page_idx + 1,
+                                                w,
+                                                h
+                                            ));
+                                        }
+                                    }
+                                } else if self.active_tool == ActiveTool::SignContract
                                     && response.clicked()
                                 {
                                     if let Some(hover_pos) = response.hover_pos() {
@@ -3229,6 +3517,116 @@ impl KestrelApp {
                                     }
                                 }
 
+                                // 5.5. Official Digital Certificate Stamp
+                                if let Some(session) = &self.session {
+                                    if let Some(meta) = &session.digital_signature {
+                                        if meta.target_page == page_idx as u16 {
+                                            let (orig_w, orig_h) = session
+                                                .pages
+                                                .get(page_idx)
+                                                .map(|p| (p.width_pt, p.height_pt))
+                                                .unwrap_or((595.28, 841.89));
+
+                                            let min_x = meta.rect[0].min(meta.rect[2]);
+                                            let max_x = meta.rect[0].max(meta.rect[2]);
+                                            let min_y = meta.rect[1].min(meta.rect[3]);
+                                            let max_y = meta.rect[1].max(meta.rect[3]);
+
+                                            let (vx, vy) = kestrel_core::document::map_pdf_point_to_visual(
+                                                min_x,
+                                                max_y,
+                                                orig_w,
+                                                orig_h,
+                                                page_rot,
+                                            );
+                                            let w_pt = (max_x - min_x).abs();
+                                            let h_pt = (max_y - min_y).abs();
+                                            let (sw, sh) = if page_rot % 180 == 90 {
+                                                (h_pt * self.zoom_level, w_pt * self.zoom_level)
+                                            } else {
+                                                (w_pt * self.zoom_level, h_pt * self.zoom_level)
+                                            };
+
+                                            let stamp_rect = egui::Rect::from_min_size(
+                                                rect.left_top() + egui::vec2(vx * self.zoom_level, vy * self.zoom_level),
+                                                egui::vec2(sw.max(80.0), sh.max(35.0)),
+                                            );
+
+                                            // Card background
+                                            painter.rect_filled(
+                                                stamp_rect,
+                                                4.0,
+                                                Color32::from_rgba_unmultiplied(240, 253, 244, 245),
+                                            );
+                                            painter.rect_stroke(
+                                                stamp_rect,
+                                                4.0,
+                                                egui::Stroke::new(
+                                                    (1.5 * self.zoom_level).clamp(1.0, 3.0),
+                                                    Color32::from_rgb(22, 163, 74),
+                                                ),
+                                            );
+
+                                            // Top banner inside stamp
+                                            let banner_h = (18.0 * self.zoom_level).clamp(14.0, 26.0);
+                                            let banner_rect = egui::Rect::from_min_size(
+                                                stamp_rect.left_top(),
+                                                egui::vec2(stamp_rect.width(), banner_h),
+                                            );
+                                            painter.rect_filled(
+                                                banner_rect,
+                                                4.0,
+                                                Color32::from_rgb(220, 252, 231),
+                                            );
+                                            painter.text(
+                                                banner_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                format!("{} FIRMADO DIGITALMENTE", crate::icons::LOCK),
+                                                egui::FontId::proportional((10.0 * self.zoom_level).clamp(8.0, 14.0)),
+                                                Color32::from_rgb(21, 128, 61),
+                                            );
+
+                                            // Metadata lines
+                                            let text_pad_x = (6.0 * self.zoom_level).clamp(4.0, 10.0);
+                                            let mut text_y = stamp_rect.top() + banner_h + (3.0 * self.zoom_level);
+                                            let line_step = (12.0 * self.zoom_level).clamp(9.0, 16.0);
+                                            let font_id = egui::FontId::proportional((8.5 * self.zoom_level).clamp(7.0, 12.0));
+
+                                            let mut lines = vec![format!("Firmante: {}", meta.signer_name)];
+                                            if let Some(id) = &meta.signer_id {
+                                                lines.push(format!("NIF: {}", id));
+                                            }
+                                            if let Some(iss) = &meta.issuer {
+                                                lines.push(format!("Emisor: {}", iss));
+                                            }
+                                            if let Some(reason) = &meta.reason {
+                                                lines.push(format!("Motivo: {}", reason));
+                                            }
+                                            if !meta.sha256_fingerprint.is_empty() {
+                                                let fp_short = if meta.sha256_fingerprint.len() > 14 {
+                                                    &meta.sha256_fingerprint[..14]
+                                                } else {
+                                                    &meta.sha256_fingerprint
+                                                };
+                                                lines.push(format!("SHA-256: {}…", fp_short));
+                                            }
+
+                                            for line in lines {
+                                                if text_y + line_step <= stamp_rect.bottom() {
+                                                    painter.text(
+                                                        egui::pos2(stamp_rect.left() + text_pad_x, text_y),
+                                                        egui::Align2::LEFT_TOP,
+                                                        line,
+                                                        font_id.clone(),
+                                                        Color32::from_rgb(15, 23, 42),
+                                                    );
+                                                    text_y += line_step;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 // 6. Selection Highlights & Visual Overlays
                                 if self.selection.page_index == Some(page_idx) {
                                     if let Some(session) = &self.session {
@@ -3374,6 +3772,51 @@ impl KestrelApp {
                                                     ),
                                                 );
                                             }
+                                        }
+                                    }
+                                }
+
+                                // Live Digital Signature Area Drag Preview
+                                if self.digital_signature_selecting_rect
+                                    && self.digital_signature_target_page == page_idx
+                                {
+                                    if let (Some(start), Some(curr)) = (
+                                        self.digital_signature_drag_start,
+                                        self.digital_signature_drag_current,
+                                    ) {
+                                        let p_min_x = start.x.min(curr.x);
+                                        let p_max_x = start.x.max(curr.x);
+                                        let p_min_y = start.y.min(curr.y);
+                                        let p_max_y = start.y.max(curr.y);
+                                        let preview_rect = egui::Rect::from_min_max(
+                                            egui::pos2(p_min_x, p_min_y),
+                                            egui::pos2(p_max_x, p_max_y),
+                                        );
+                                        if preview_rect.width() > 4.0 || preview_rect.height() > 4.0 {
+                                            painter.rect_filled(
+                                                preview_rect,
+                                                4.0,
+                                                Color32::from_rgba_unmultiplied(34, 197, 94, 45),
+                                            );
+                                            painter.rect_stroke(
+                                                preview_rect,
+                                                4.0,
+                                                egui::Stroke::new(2.0_f32, Color32::from_rgb(34, 197, 94)),
+                                            );
+                                            let w_pt = preview_rect.width() / self.zoom_level;
+                                            let h_pt = preview_rect.height() / self.zoom_level;
+                                            painter.text(
+                                                preview_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                format!(
+                                                    "{} Recuadro de Firma ({:.0} × {:.0} pt)",
+                                                    crate::icons::CERTIFICATE,
+                                                    w_pt,
+                                                    h_pt
+                                                ),
+                                                egui::FontId::proportional(12.0),
+                                                Color32::from_rgb(21, 128, 61),
+                                            );
                                         }
                                     }
                                 }
@@ -3660,6 +4103,245 @@ impl KestrelApp {
                         .clicked()
                     {
                         self.editing_text_modal_open = false;
+                    }
+                });
+            });
+        }
+
+        // 7. Digital Certificate Modal Window
+        if self.digital_signature_modal_open {
+            egui::Window::new(format!(
+                "{} Firmar con Certificado Digital",
+                crate::icons::CERTIFICATE
+            ))
+            .collapsible(false)
+            .resizable(false)
+            .default_size(Vec2::new(480.0, 520.0))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Configure los datos del certificado digital y la firma criptográfica PAdES:",
+                    )
+                    .color(crate::theme::Theme::TEXT_SECONDARY)
+                    .size(12.0),
+                );
+                ui.add_space(8.0);
+
+                // 1. Placement Summary Card
+                crate::theme::Theme::card_frame().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let w_pt = (self.digital_signature_rect[2] - self.digital_signature_rect[0]).abs();
+                        let h_pt = (self.digital_signature_rect[3] - self.digital_signature_rect[1]).abs();
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Ubicación: Página {}  ·  Recuadro: {:.0} × {:.0} pt",
+                                self.digital_signature_target_page + 1,
+                                w_pt,
+                                h_pt
+                            ))
+                            .color(crate::theme::Theme::TEXT_PRIMARY)
+                            .strong()
+                            .size(12.0),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    crate::theme::Theme::secondary_button("Cambiar área")
+                                        .min_size(Vec2::new(0.0, 22.0)),
+                                )
+                                .on_hover_text("Seleccionar otro recuadro en el documento")
+                                .clicked()
+                            {
+                                self.start_digital_signature_box_selection();
+                            }
+                        });
+                    });
+                });
+
+                ui.add_space(8.0);
+
+                // 2. Certificate File Picker Card
+                crate::theme::Theme::card_frame().show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new("Archivo de Certificado Digital (.p12, .pfx, .crt, .cer):")
+                            .color(crate::theme::Theme::TEXT_SECONDARY)
+                            .size(12.0),
+                    );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                crate::theme::Theme::secondary_button(format!(
+                                    "{} Cargar certificado...",
+                                    crate::icons::OPEN_FILE
+                                ))
+                                .min_size(Vec2::new(0.0, 24.0)),
+                            )
+                            .on_hover_text("Seleccionar archivo de certificado desde el disco")
+                            .clicked()
+                        {
+                            self.pick_certificate_file_dialog();
+                        }
+
+                        let file_label = match &self.selected_certificate_path {
+                            Some(p) => {
+                                let name = std::path::Path::new(p)
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| p.clone());
+                                format!("✓ {}", name)
+                            }
+                            None => "Perfil de firma PKI del sistema".to_string(),
+                        };
+                        ui.label(
+                            egui::RichText::new(file_label)
+                                .color(if self.selected_certificate_path.is_some() {
+                                    crate::theme::Theme::ACCENT_OCHRE
+                                } else {
+                                    crate::theme::Theme::TEXT_MUTED
+                                })
+                                .size(11.5),
+                        );
+                    });
+                });
+
+                ui.add_space(8.0);
+
+                // 3. Metadata fields
+                crate::theme::Theme::card_frame().show(ui, |ui| {
+                    egui::Grid::new("cert_fields_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new("Firmante:")
+                                    .color(crate::theme::Theme::TEXT_SECONDARY),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.signer_name_input)
+                                    .desired_width(280.0),
+                            );
+                            ui.end_row();
+
+                            ui.label(
+                                egui::RichText::new("NIF / NIE / CIF:")
+                                    .color(crate::theme::Theme::TEXT_SECONDARY),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.signer_id_input)
+                                    .desired_width(280.0),
+                            );
+                            ui.end_row();
+
+                            ui.label(
+                                egui::RichText::new("Emisor / CA:")
+                                    .color(crate::theme::Theme::TEXT_SECONDARY),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.signer_issuer_input)
+                                    .desired_width(280.0),
+                            );
+                            ui.end_row();
+
+                            ui.label(
+                                egui::RichText::new("Motivo:")
+                                    .color(crate::theme::Theme::TEXT_SECONDARY),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.signature_reason_input)
+                                    .desired_width(280.0),
+                            );
+                            ui.end_row();
+
+                            ui.label(
+                                egui::RichText::new("Lugar:")
+                                    .color(crate::theme::Theme::TEXT_SECONDARY),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.signature_location_input)
+                                    .desired_width(280.0),
+                            );
+                            ui.end_row();
+                        });
+                });
+
+                ui.add_space(8.0);
+
+                // 4. Live Stamp Visual Preview
+                crate::theme::Theme::card_frame().show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new("Vista previa del sello oficial en documento:")
+                            .color(crate::theme::Theme::TEXT_MUTED)
+                            .size(11.0),
+                    );
+                    ui.add_space(4.0);
+
+                    let (preview_resp, preview_painter) =
+                        ui.allocate_painter(Vec2::new(ui.available_width(), 70.0), egui::Sense::hover());
+                    let p_rect = preview_resp.rect;
+
+                    preview_painter.rect_filled(p_rect, 4.0, Color32::from_rgb(240, 253, 244));
+                    preview_painter.rect_stroke(
+                        p_rect,
+                        4.0,
+                        egui::Stroke::new(1.5_f32, Color32::from_rgb(22, 163, 74)),
+                    );
+
+                    let top_banner = egui::Rect::from_min_size(p_rect.left_top(), Vec2::new(p_rect.width(), 18.0));
+                    preview_painter.rect_filled(top_banner, 4.0, Color32::from_rgb(220, 252, 231));
+                    preview_painter.text(
+                        top_banner.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("{} FIRMADO DIGITALMENTE", crate::icons::LOCK),
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(21, 128, 61),
+                    );
+
+                    let prev_text = format!(
+                        "Firmante: {}  ·  NIF: {}\nEmisor: {}  ·  Motivo: {}",
+                        self.signer_name_input,
+                        self.signer_id_input,
+                        self.signer_issuer_input,
+                        self.signature_reason_input
+                    );
+                    preview_painter.text(
+                        egui::pos2(p_rect.left() + 8.0, p_rect.top() + 24.0),
+                        egui::Align2::LEFT_TOP,
+                        prev_text,
+                        egui::FontId::proportional(10.0),
+                        Color32::from_rgb(15, 23, 42),
+                    );
+                });
+
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // 5. Actions
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            crate::theme::Theme::primary_button(format!(
+                                "{} Firmar y Estampar Documento",
+                                crate::icons::CHECK
+                            ))
+                            .min_size(Vec2::new(220.0, 32.0)),
+                        )
+                        .on_hover_text("Estampar firma digital con certificado en el recuadro seleccionado")
+                        .clicked()
+                    {
+                        self.apply_digital_certificate_signature();
+                    }
+
+                    if ui
+                        .add(
+                            crate::theme::Theme::secondary_button("Cancelar")
+                                .min_size(Vec2::new(0.0, 32.0)),
+                        )
+                        .clicked()
+                    {
+                        self.digital_signature_modal_open = false;
+                        self.digital_signature_selecting_rect = false;
                     }
                 });
             });

@@ -2611,3 +2611,191 @@ fn test_e2e_phase3_image_tool_and_manipulation() {
     });
     assert!(!output.shapes.is_empty());
 }
+
+#[test]
+fn test_e2e_digital_certificate_signature_custom_rect_and_modal() {
+    let pdf_bytes = generate_synthetic_search_corpus_pdf();
+    let mut app = KestrelApp::default();
+    app.load_document_bytes(pdf_bytes, Some("test_contract.pdf".to_string()));
+
+    // 1. Enter digital signature rectangle selection mode
+    app.start_digital_signature_box_selection();
+    assert!(
+        app.digital_signature_selecting_rect,
+        "Selecting rect mode must be active"
+    );
+    assert_eq!(app.active_tool, ActiveTool::SignContract);
+
+    // 2. Simulate selecting custom rectangle on Page 1 (0-based page index 1)
+    app.digital_signature_target_page = 1;
+    app.digital_signature_rect = [120.0, 220.0, 320.0, 300.0];
+    app.open_digital_signature_dialog();
+    assert!(
+        app.digital_signature_modal_open,
+        "Digital signature modal dialog must be open"
+    );
+    assert!(
+        !app.digital_signature_selecting_rect,
+        "Selecting rect mode must be inactive once dialog is open"
+    );
+
+    // 3. Configure signer inputs
+    app.signer_name_input = "Antonio Pérez Martínez".to_string();
+    app.signer_id_input = "12345678Z".to_string();
+    app.signer_issuer_input = "FNMT-RCM AC Usuarios".to_string();
+    app.signature_reason_input = "Firma y Aprobación de Contrato".to_string();
+    app.signature_location_input = "Madrid, España".to_string();
+
+    // 4. Verify modal rendering with custom signer inputs
+    let ctx = Context::default();
+    let modal_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1280.0, 800.0),
+        )),
+        ..Default::default()
+    };
+    let _ = ctx.run(modal_input.clone(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let output = ctx.run(modal_input.clone(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let rendered_texts = extract_all_text_from_shapes(&output.shapes);
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("Firmar con Certificado Digital")),
+        "Modal title must be rendered"
+    );
+    assert!(
+        rendered_texts.iter().any(|t| t.contains("12345678Z")),
+        "Signer NIF must be rendered in modal"
+    );
+
+    // 5. Apply digital certificate signature
+    let applied = app.apply_digital_certificate_signature();
+    assert!(applied, "apply_digital_certificate_signature must succeed");
+    assert!(
+        !app.digital_signature_modal_open,
+        "Modal must close after signing"
+    );
+
+    // Verify session has digital signature metadata
+    let session = app.session.as_ref().unwrap();
+    let meta = session.digital_signature.as_ref().unwrap();
+    assert_eq!(meta.signer_name, "Antonio Pérez Martínez");
+    assert_eq!(meta.signer_id.as_deref(), Some("12345678Z"));
+    assert_eq!(meta.issuer.as_deref(), Some("FNMT-RCM AC Usuarios"));
+    assert_eq!(meta.target_page, 1);
+    assert_eq!(meta.rect, [120.0, 220.0, 320.0, 300.0]);
+
+    // 6. Verify canvas renders the official certificate stamp
+    app.set_current_page(2); // Jump to page 2 (index 1)
+    let _ = ctx.run(modal_input.clone(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let output_signed = ctx.run(modal_input, |ctx| {
+        app.render_ui(ctx);
+    });
+    let canvas_texts = extract_all_text_from_shapes(&output_signed.shapes);
+    assert!(
+        canvas_texts
+            .iter()
+            .any(|t| t.contains("FIRMADO DIGITALMENTE")),
+        "Canvas must render FIRMADO DIGITALMENTE badge inside target rect"
+    );
+    assert!(
+        canvas_texts
+            .iter()
+            .any(|t| t.contains("Antonio Pérez Martínez")),
+        "Canvas stamp must display signer name"
+    );
+
+    // 7. Serialize document and verify PAdES dictionary in bytes
+    let signed_bytes = app
+        .session
+        .as_mut()
+        .unwrap()
+        .save_to_bytes()
+        .expect("Save signed PDF");
+    let parsed_doc = Document::load_mem(&signed_bytes).expect("Parse saved PDF");
+    let pages = parsed_doc.get_pages();
+    let p1_id = pages.get(&2).expect("Page 2 exists");
+    let p1_dict = parsed_doc.get_object(*p1_id).unwrap().as_dict().unwrap();
+    let annots = p1_dict.get(b"Annots").unwrap().as_array().unwrap();
+    assert!(!annots.is_empty(), "Page 2 must have widget annotation");
+    let widget_ref = annots.last().unwrap().as_reference().unwrap();
+    let widget_dict = parsed_doc
+        .get_object(widget_ref)
+        .unwrap()
+        .as_dict()
+        .unwrap();
+    assert_eq!(
+        widget_dict.get(b"Subtype").unwrap().as_name_str().unwrap(),
+        "Widget"
+    );
+    assert_eq!(
+        widget_dict.get(b"FT").unwrap().as_name_str().unwrap(),
+        "Sig"
+    );
+}
+
+#[test]
+fn test_e2e_home_open_file_box_separated_layout() {
+    let mut app = KestrelApp::default();
+    assert_eq!(app.total_pages, 0);
+
+    let ctx = Context::default();
+    let output = ctx.run(egui::RawInput::default(), |ctx| {
+        app.render_ui(ctx);
+    });
+
+    let rendered_texts = extract_all_text_from_shapes(&output.shapes);
+
+    // 1. Verify floating branding
+    assert!(
+        rendered_texts.iter().any(|t| t.contains("Kestrel-PDF")),
+        "Start screen must render Kestrel-PDF branding"
+    );
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("Lector y editor de PDF universal")),
+        "Start screen must render subtitle description"
+    );
+
+    // 2. Verify centered open file hero box elements
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("Abrir fichero PDF")),
+        "Hero box must contain prominent 'Abrir fichero PDF' button"
+    );
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("arrastra y suelta")),
+        "Hero box must contain drag-and-drop prompt"
+    );
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("Atajo: Ctrl+O  /  Cmd+O")),
+        "Hero box must contain shortcut pill badge"
+    );
+
+    // 3. Verify feature pills below
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("Rendimiento Nativo")),
+        "Start screen must render performance badge"
+    );
+    assert!(
+        rendered_texts
+            .iter()
+            .any(|t| t.contains("Firma Digital PAdES")),
+        "Start screen must render digital signature badge"
+    );
+}

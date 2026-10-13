@@ -202,28 +202,100 @@ pub fn smooth_stroke_bezier(points: &[StrokePoint], subdivisions: usize) -> Vec<
     smoothed
 }
 
-/// Cryptographic PAdES / PKCS#7 digital signature metadata.
+/// Cryptographic PAdES / PKCS#7 digital signature metadata and target visual placement.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DigitalSignatureMeta {
     pub signer_name: String,
+    pub signer_id: Option<String>,
+    pub issuer: Option<String>,
     pub contact_info: Option<String>,
     pub location: Option<String>,
     pub reason: Option<String>,
     pub signing_time: String,
     pub sha256_fingerprint: String,
+    pub target_page: u16,
+    pub rect: [f32; 4],
+    pub certificate_file: Option<String>,
 }
 
 impl DigitalSignatureMeta {
     pub fn new(signer_name: impl Into<String>) -> Self {
         Self {
             signer_name: signer_name.into(),
+            signer_id: None,
+            issuer: Some("FNMT-RCM / DNIe / PKI Provider".to_string()),
             contact_info: None,
             location: None,
-            reason: Some("Document electronically signed with Kestrel-PDF".to_string()),
-            signing_time: "D:20261006120000Z".to_string(),
+            reason: Some("Documento firmado digitalmente".to_string()),
+            signing_time: "D:20261013200000Z".to_string(),
             sha256_fingerprint: String::new(),
+            target_page: 0,
+            rect: [50.0, 50.0, 250.0, 110.0],
+            certificate_file: None,
         }
     }
+}
+
+/// Generates PDF content stream operators for the visual digital signature appearance.
+pub fn generate_signature_appearance_stream(
+    meta: &DigitalSignatureMeta,
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+) -> Vec<u8> {
+    let w = (max_x - min_x).max(10.0);
+    let h = (max_y - min_y).max(10.0);
+
+    let mut ops = String::new();
+    ops.push_str("q\n");
+    // Draw background rect
+    ops.push_str("0.96 0.98 0.96 rg\n");
+    ops.push_str(&format!("{:.2} {:.2} {:.2} {:.2} re\n", min_x, min_y, w, h));
+    ops.push_str("f\n");
+
+    // Draw border
+    ops.push_str("0.10 0.45 0.20 RG\n");
+    ops.push_str("1.2 w\n");
+    ops.push_str(&format!("{:.2} {:.2} {:.2} {:.2} re\n", min_x, min_y, w, h));
+    ops.push_str("S\n");
+
+    // Draw text inside
+    ops.push_str("BT\n");
+    ops.push_str("/F1 8 Tf\n");
+    ops.push_str("0.08 0.35 0.15 rg\n");
+    ops.push_str(&format!(
+        "{:.2} {:.2} Td\n",
+        min_x + 6.0,
+        (max_y - 12.0).max(min_y)
+    ));
+    ops.push_str("(FIRMADO DIGITALMENTE) Tj\n");
+    ops.push_str("0.1 0.1 0.1 rg\n");
+    ops.push_str("/F1 7 Tf\n");
+    ops.push_str("0 -10 Td\n");
+    let safe_name = meta.signer_name.replace('(', "\\(").replace(')', "\\)");
+    ops.push_str(&format!("(Firmante: {}) Tj\n", safe_name));
+
+    if let Some(id) = &meta.signer_id {
+        let safe_id = id.replace('(', "\\(").replace(')', "\\)");
+        ops.push_str("0 -9 Td\n");
+        ops.push_str(&format!("(ID/NIF: {}) Tj\n", safe_id));
+    }
+
+    if let Some(issuer) = &meta.issuer {
+        let safe_issuer = issuer.replace('(', "\\(").replace(')', "\\)");
+        ops.push_str("0 -9 Td\n");
+        ops.push_str(&format!("(Emisor: {}) Tj\n", safe_issuer));
+    }
+
+    ops.push_str("0 -9 Td\n");
+    let safe_date = meta.signing_time.replace('(', "\\(").replace(')', "\\)");
+    ops.push_str(&format!("(Fecha: {}) Tj\n", safe_date));
+
+    ops.push_str("ET\n");
+    ops.push_str("Q\n");
+
+    ops.into_bytes()
 }
 
 /// Computes a standard SHA-256 digest of binary document content.
@@ -317,7 +389,12 @@ pub fn embed_digital_signature(
 
     let sig_dict_id = doc.add_object(Object::Dictionary(sig_dict));
 
-    // 3. Build Widget annotation
+    // 3. Build Widget annotation with target Rect
+    let min_x = meta.rect[0].min(meta.rect[2]);
+    let min_y = meta.rect[1].min(meta.rect[3]);
+    let max_x = meta.rect[0].max(meta.rect[2]);
+    let max_y = meta.rect[1].max(meta.rect[3]);
+
     let mut widget = Dictionary::new();
     widget.set("Type", Object::Name(b"Annot".to_vec()));
     widget.set("Subtype", Object::Name(b"Widget".to_vec()));
@@ -331,12 +408,31 @@ pub fn embed_digital_signature(
     widget.set(
         "Rect",
         Object::Array(vec![
-            Object::Real(50.0),
-            Object::Real(50.0),
-            Object::Real(250.0),
-            Object::Real(110.0),
+            Object::Real(min_x),
+            Object::Real(min_y),
+            Object::Real(max_x),
+            Object::Real(max_y),
         ]),
     );
+
+    // Build visual appearance stream for widget
+    let ap_bytes = generate_signature_appearance_stream(meta, min_x, min_y, max_x, max_y);
+    let mut ap_dict = Dictionary::new();
+    ap_dict.set("Type", Object::Name(b"XObject".to_vec()));
+    ap_dict.set("Subtype", Object::Name(b"Form".to_vec()));
+    ap_dict.set(
+        "BBox",
+        Object::Array(vec![
+            Object::Real(min_x),
+            Object::Real(min_y),
+            Object::Real(max_x),
+            Object::Real(max_y),
+        ]),
+    );
+    let ap_id = doc.add_object(Object::Stream(lopdf::Stream::new(ap_dict, ap_bytes)));
+    let mut ap_wrapper = Dictionary::new();
+    ap_wrapper.set("N", Object::Reference(ap_id));
+    widget.set("AP", Object::Dictionary(ap_wrapper));
 
     let widget_id = doc.add_object(Object::Dictionary(widget));
 
