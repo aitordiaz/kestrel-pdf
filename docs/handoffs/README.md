@@ -27,6 +27,7 @@ When an AI agent or engineer pauses work or transfers context to another agent, 
 | **[0015](0015-v0.2.19-page-navigator-flexible-input-and-enter-navigation.md)** | [Page Navigator Flexible Input Parsing & Enter Jump Engine](0015-v0.2.19-page-navigator-flexible-input-and-enter-navigation.md) | v0.2.19 | 2026-10-08 | **Completed** | 61 automated tests passing, flexible page input parsing ("3/4", "3 / 4", "3 of 4", "p3"), robust Enter/blur navigation, dual scroll execution. |
 | **[0016](0016-v0.3.0-phase-3-in-place-editing-and-page-tree.md)** | [v0.3.0 Release: Phase 3 In-Place Text & Image Editing and Page Tree Organization](0016-v0.3.0-phase-3-in-place-editing-and-page-tree.md) | v0.3.0 | 2026-10-08 | **Completed** | 67 automated tests passing, in-place text editing & box insertion, image replacement & deletion, page tree organizer (insert/delete/duplicate/reorder). |
 | **[0017](0017-disable-linux-and-web-ci-compilation.md)** | [Temporary Disabling of Linux and WebAssembly CI/Release Compilation](0017-disable-linux-and-web-ci-compilation.md) | v0.3.0 | 2026-10-13 | **Completed** | Disabled Linux and WASM compilation in CI and Release workflows to speed up pipeline and save runner resources. |
+| **[0018](0018-disable-macos-ci-compilation.md)** | [Temporary Disabling of macOS CI/Release Compilation](0018-disable-macos-ci-compilation.md) | v0.3.0 | 2026-10-13 | **Completed** | Disabled macOS compilation in CI and Release workflows, leaving windows-latest as sole active target. |
 
 
 ---
