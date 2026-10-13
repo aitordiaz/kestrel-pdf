@@ -649,7 +649,7 @@ impl DocumentSession {
 
         // 3. Embed cryptographic PAdES digital signature if present
         if let Some(mut meta) = self.digital_signature.clone() {
-            sign::embed_digital_signature(&mut doc, 0, &mut meta)
+            sign::embed_digital_signature(&mut doc, meta.target_page, &mut meta)
                 .context("Failed to embed digital signature")?;
             self.digital_signature = Some(meta);
         }

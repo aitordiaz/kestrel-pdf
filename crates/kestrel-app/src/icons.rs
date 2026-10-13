@@ -52,3 +52,4 @@ pub const UNDO: &str = regular::ARROW_U_UP_LEFT;
 pub const LOCK: &str = regular::LOCK;
 pub const CHECK: &str = regular::CHECK;
 pub const CHECK_CIRCLE: &str = regular::CHECK_CIRCLE;
+pub const CERTIFICATE: &str = regular::CERTIFICATE;
