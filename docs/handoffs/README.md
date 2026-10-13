@@ -28,6 +28,7 @@ When an AI agent or engineer pauses work or transfers context to another agent, 
 | **[0016](0016-v0.3.0-phase-3-in-place-editing-and-page-tree.md)** | [v0.3.0 Release: Phase 3 In-Place Text & Image Editing and Page Tree Organization](0016-v0.3.0-phase-3-in-place-editing-and-page-tree.md) | v0.3.0 | 2026-10-08 | **Completed** | 67 automated tests passing, in-place text editing & box insertion, image replacement & deletion, page tree organizer (insert/delete/duplicate/reorder). |
 | **[0017](0017-disable-linux-and-web-ci-compilation.md)** | [Temporary Disabling of Linux and WebAssembly CI/Release Compilation](0017-disable-linux-and-web-ci-compilation.md) | v0.3.0 | 2026-10-13 | **Completed** | Disabled Linux and WASM compilation in CI and Release workflows to speed up pipeline and save runner resources. |
 | **[0018](0018-disable-macos-ci-compilation.md)** | [Temporary Disabling of macOS CI/Release Compilation](0018-disable-macos-ci-compilation.md) | v0.3.0 | 2026-10-13 | **Completed** | Disabled macOS compilation in CI and Release workflows, leaving windows-latest as sole active target. |
+| **[0019](0019-search-individual-occurrences-and-counter.md)** | [Individual Search Occurrences, Active Context Snippets & Document Counter Badge](0019-search-individual-occurrences-and-counter.md) | v0.3.1 | 2026-10-13 | **Completed** | 68 automated tests passing, individual search match occurrences, context snippets, active styling, X/N counter badge, arrow navigation. |
 
 
 ---

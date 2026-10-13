@@ -40,12 +40,14 @@ pub struct LayerInfo {
     pub visible: bool,
 }
 
-/// Search match location and context snippet.
+/// Search match location, context snippet, and positional occurrence indices.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchResult {
     pub page_index: u16,
     pub snippet: String,
     pub match_count: usize,
+    pub match_index_in_page: usize,
+    pub global_match_index: usize,
 }
 
 /// Individual positioned text fragment extracted from a PDF content stream.
@@ -482,33 +484,73 @@ impl DocumentSession {
         Ok(text)
     }
 
-    /// Performs full-text search across all document pages.
+    /// Extracts a safe context snippet around `byte_idx` respecting UTF-8 char boundaries.
+    fn safe_search_snippet(text: &str, byte_idx: usize, query_len: usize) -> String {
+        let mut start = byte_idx.saturating_sub(25);
+        while start > 0 && !text.is_char_boundary(start) {
+            start -= 1;
+        }
+
+        let mut end = (byte_idx + query_len + 35).min(text.len());
+        while end < text.len() && !text.is_char_boundary(end) {
+            end += 1;
+        }
+
+        let prefix = if start > 0 { "..." } else { "" };
+        let suffix = if end < text.len() { "..." } else { "" };
+        format!(
+            "{}{}{}",
+            prefix,
+            text[start..end].replace('\n', " "),
+            suffix
+        )
+    }
+
+    /// Performs full-text search across all document pages, returning each individual occurrence with surrounding context.
     pub fn search_text(&self, query: &str) -> Vec<SearchResult> {
-        if query.trim().is_empty() {
+        let trimmed_query = query.trim();
+        if trimmed_query.is_empty() {
             return Vec::new();
         }
 
         let mut results = Vec::new();
         let query_lower = query.to_lowercase();
+        let mut global_idx = 0;
 
-        if let Ok(doc) = lopdf::Document::load_mem(&self.raw_bytes) {
-            for page in &self.pages {
-                let page_num = (page.index + 1) as u32;
-                let text = extract_page_text_robust(&doc, page_num);
-                if !text.is_empty() {
-                    let text_lower = text.to_lowercase();
-                    let matches: Vec<_> = text_lower.match_indices(&query_lower).collect();
-                    if !matches.is_empty() {
-                        let first_idx = matches[0].0;
-                        let start = first_idx.saturating_sub(20);
-                        let end = (first_idx + query.len() + 30).min(text.len());
-                        let snippet = format!("...{}...", text[start..end].replace('\n', " "));
-                        results.push(SearchResult {
-                            page_index: page.index,
-                            snippet,
-                            match_count: matches.len(),
-                        });
-                    }
+        for page in &self.pages {
+            let page_idx = page.index as usize;
+            let fallback_text;
+            let text = if let Some(t) = self.page_texts.get(page_idx) {
+                if !t.is_empty() {
+                    t.as_str()
+                } else if let Ok(doc) = lopdf::Document::load_mem(&self.raw_bytes) {
+                    fallback_text = extract_page_text_robust(&doc, (page.index + 1) as u32);
+                    fallback_text.as_str()
+                } else {
+                    ""
+                }
+            } else if let Ok(doc) = lopdf::Document::load_mem(&self.raw_bytes) {
+                fallback_text = extract_page_text_robust(&doc, (page.index + 1) as u32);
+                fallback_text.as_str()
+            } else {
+                ""
+            };
+
+            if !text.is_empty() {
+                let text_lower = text.to_lowercase();
+                let matches: Vec<_> = text_lower.match_indices(&query_lower).collect();
+                let page_match_count = matches.len();
+
+                for (match_idx_in_page, (byte_idx, _)) in matches.into_iter().enumerate() {
+                    let snippet = Self::safe_search_snippet(text, byte_idx, query.len());
+                    results.push(SearchResult {
+                        page_index: page.index,
+                        snippet,
+                        match_count: page_match_count,
+                        match_index_in_page: match_idx_in_page,
+                        global_match_index: global_idx,
+                    });
+                    global_idx += 1;
                 }
             }
         }

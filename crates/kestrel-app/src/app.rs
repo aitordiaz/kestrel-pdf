@@ -463,7 +463,9 @@ impl KestrelApp {
             self.scroll_to_page = Some(res.page_index as usize);
             self.scroll_to_search_match = true;
             self.status_toast = Some(format!(
-                "Navigated to search match on Page {}",
+                "Resultado {} de {} (Página {})",
+                idx + 1,
+                self.search_results.len(),
                 res.page_index + 1
             ));
         }
@@ -1671,11 +1673,11 @@ impl KestrelApp {
                                 self.execute_search();
                             }
                             let search_w = if is_compact {
-                                65.0
+                                55.0
                             } else if is_medium {
-                                90.0
+                                80.0
                             } else {
-                                110.0
+                                100.0
                             };
                             let search_resp = ui.add(
                                 egui::TextEdit::singleline(&mut self.search_query)
@@ -1684,39 +1686,59 @@ impl KestrelApp {
                             );
                             let enter_pressed = search_resp.has_focus()
                                 && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            let shift_pressed = ui.input(|i| i.modifiers.shift);
                             if enter_pressed {
-                                if !self.search_results.is_empty() {
+                                if shift_pressed {
+                                    if !self.search_results.is_empty() {
+                                        self.prev_search_result();
+                                    }
+                                } else if !self.search_results.is_empty() {
                                     self.next_search_result();
                                 } else {
                                     self.execute_search();
                                 }
                             }
 
-                            if !self.search_results.is_empty() && !is_compact {
-                                if ui
-                                    .add(
-                                        crate::theme::Theme::secondary_button(
-                                            crate::icons::CARET_LEFT,
-                                        )
-                                        .min_size(Vec2::new(18.0, 24.0)),
+                            // Counter badge: X / N
+                            let counter_str = if self.search_results.is_empty() {
+                                "0 / 0".to_string()
+                            } else {
+                                let curr = self.selected_search_result.map(|i| i + 1).unwrap_or(0);
+                                format!("{} / {}", curr, self.search_results.len())
+                            };
+                            ui.label(
+                                egui::RichText::new(counter_str)
+                                    .size(11.0)
+                                    .color(crate::theme::Theme::TEXT_MUTED)
+                                    .monospace(),
+                            );
+
+                            let has_results = !self.search_results.is_empty();
+                            if ui
+                                .add_enabled(
+                                    has_results,
+                                    crate::theme::Theme::secondary_button(
+                                        crate::icons::CARET_LEFT,
                                     )
-                                    .on_hover_text("Resultado anterior")
-                                    .clicked()
-                                {
-                                    self.prev_search_result();
-                                }
-                                if ui
-                                    .add(
-                                        crate::theme::Theme::secondary_button(
-                                            crate::icons::CARET_RIGHT,
-                                        )
-                                        .min_size(Vec2::new(18.0, 24.0)),
+                                    .min_size(Vec2::new(16.0, 24.0)),
+                                )
+                                .on_hover_text("Resultado anterior (Shift+Enter)")
+                                .clicked()
+                            {
+                                self.prev_search_result();
+                            }
+                            if ui
+                                .add_enabled(
+                                    has_results,
+                                    crate::theme::Theme::secondary_button(
+                                        crate::icons::CARET_RIGHT,
                                     )
-                                    .on_hover_text("Siguiente resultado")
-                                    .clicked()
-                                {
-                                    self.next_search_result();
-                                }
+                                    .min_size(Vec2::new(16.0, 24.0)),
+                                )
+                                .on_hover_text("Siguiente resultado (Enter)")
+                                .clicked()
+                            {
+                                self.next_search_result();
                             }
                         });
                     });
@@ -2100,42 +2122,109 @@ impl KestrelApp {
                         SidebarTab::SearchResults => {
                             egui::ScrollArea::vertical().show(ui, |ui| {
                                 if self.search_results.is_empty() {
-                                    ui.label("No matches found.");
+                                    ui.label(
+                                        egui::RichText::new("No se encontraron coincidencias.")
+                                            .color(crate::theme::Theme::TEXT_MUTED)
+                                            .italics(),
+                                    );
                                 } else {
+                                    let active_idx =
+                                        self.selected_search_result.map(|i| i + 1).unwrap_or(0);
                                     ui.label(
                                         egui::RichText::new(format!(
-                                            "Found {} matching pages:",
+                                            "Coincidencias ({} / {}):",
+                                            active_idx,
                                             self.search_results.len()
                                         ))
-                                        .color(crate::theme::Theme::TEXT_SECONDARY),
+                                        .strong()
+                                        .color(crate::theme::Theme::TEXT_PRIMARY),
                                     );
-                                    ui.add_space(4.0);
+                                    ui.add_space(6.0);
                                     let mut nav_idx = None;
                                     for (res_idx, res) in self.search_results.iter().enumerate() {
                                         let is_selected =
                                             self.selected_search_result == Some(res_idx);
-                                        crate::theme::Theme::card_frame().show(ui, |ui| {
-                                            let btn_label = format!(
-                                                "Page {}: {}",
-                                                res.page_index + 1,
-                                                res.snippet
-                                            );
-                                            let btn = if is_selected {
-                                                crate::theme::Theme::accent_button(btn_label)
-                                            } else {
-                                                crate::theme::Theme::secondary_button(btn_label)
-                                            };
-                                            if ui
-                                                .add(btn)
-                                                .on_hover_text(
-                                                    "Saltar a este resultado en el documento",
-                                                )
-                                                .clicked()
-                                            {
-                                                nav_idx = Some(res_idx);
-                                            }
-                                        });
-                                        ui.add_space(3.0);
+
+                                        let frame = if is_selected {
+                                            egui::Frame::none()
+                                                .fill(egui::Color32::from_rgb(45, 34, 30))
+                                                .stroke(egui::Stroke::new(
+                                                    1.5_f32,
+                                                    crate::theme::Theme::ACCENT_OCHRE,
+                                                ))
+                                                .rounding(6.0)
+                                                .inner_margin(egui::Margin::same(8.0))
+                                        } else {
+                                            crate::theme::Theme::card_frame()
+                                        };
+
+                                        let resp = frame
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    let badge_text = format!(
+                                                        "#{} · Pág. {}",
+                                                        res_idx + 1,
+                                                        res.page_index + 1
+                                                    );
+                                                    let title_color = if is_selected {
+                                                        crate::theme::Theme::ACCENT_OCHRE
+                                                    } else {
+                                                        crate::theme::Theme::TEXT_PRIMARY
+                                                    };
+                                                    ui.label(
+                                                        egui::RichText::new(badge_text)
+                                                            .color(title_color)
+                                                            .strong()
+                                                            .size(12.0),
+                                                    );
+
+                                                    if is_selected {
+                                                        ui.with_layout(
+                                                            egui::Layout::right_to_left(
+                                                                egui::Align::Center,
+                                                            ),
+                                                            |ui| {
+                                                                ui.label(
+                                                                    egui::RichText::new("● Activa")
+                                                                        .color(
+                                                                            crate::theme::Theme::ACCENT_OCHRE,
+                                                                        )
+                                                                        .size(10.0),
+                                                                );
+                                                            },
+                                                        );
+                                                    }
+                                                });
+
+                                                ui.add_space(3.0);
+                                                let snippet_color = if is_selected {
+                                                    egui::Color32::WHITE
+                                                } else {
+                                                    crate::theme::Theme::TEXT_SECONDARY
+                                                };
+                                                ui.label(
+                                                    egui::RichText::new(&res.snippet)
+                                                        .color(snippet_color)
+                                                        .size(11.5),
+                                                );
+                                            })
+                                            .response;
+
+                                        let card_interact = ui.interact(
+                                            resp.rect,
+                                            ui.id().with(res_idx),
+                                            egui::Sense::click(),
+                                        );
+                                        if card_interact.clicked() {
+                                            nav_idx = Some(res_idx);
+                                        }
+                                        if card_interact.hovered() {
+                                            ui.output_mut(|o| {
+                                                o.cursor_icon = egui::CursorIcon::PointingHand
+                                            });
+                                        }
+
+                                        ui.add_space(4.0);
                                     }
                                     if let Some(idx) = nav_idx {
                                         self.navigate_to_search_result(idx);
@@ -2775,6 +2864,7 @@ impl KestrelApp {
                                 if let Some(session) = &self.session {
                                     if let Some(layout) = session.get_page_layout(page_idx) {
                                         if !layout.text_runs.is_empty() {
+                                            let mut page_search_match_idx: usize = 0;
                                             for tr in &layout.text_runs {
                                                 let font_size = (tr.font_size * self.zoom_level)
                                                     .clamp(6.0, 72.0);
@@ -2807,6 +2897,9 @@ impl KestrelApp {
                                                         let q_len = q_lower.len();
                                                         for i in 0..=(t_lower.len() - q_len) {
                                                             if t_lower[i..i + q_len] == q_lower[..] {
+                                                                let match_idx_in_this_page = page_search_match_idx;
+                                                                page_search_match_idx += 1;
+
                                                                 let prefix: String = t_chars[..i].iter().collect();
                                                                 let matched_text: String = t_chars[i..i + q_len].iter().collect();
 
@@ -2826,7 +2919,10 @@ impl KestrelApp {
                                                                 let is_active_result = self.selected_search_result.is_some_and(|sel_idx| {
                                                                     self.search_results
                                                                         .get(sel_idx)
-                                                                        .is_some_and(|r| r.page_index as usize == page_idx)
+                                                                        .is_some_and(|r| {
+                                                                            r.page_index as usize == page_idx
+                                                                                && r.match_index_in_page == match_idx_in_this_page
+                                                                        })
                                                                 });
 
                                                                 let hl_color = if is_active_result {
@@ -2845,7 +2941,10 @@ impl KestrelApp {
                                                                     );
                                                                     painter.rect_filled(hl_rect, 2.0, hl_color);
 
-                                                                    if self.scroll_to_search_match && self.scroll_to_page == Some(page_idx) {
+                                                                    if is_active_result
+                                                                        && self.scroll_to_search_match
+                                                                        && self.scroll_to_page == Some(page_idx)
+                                                                    {
                                                                         ui.scroll_to_rect(hl_rect, Some(egui::Align::Center));
                                                                         self.scroll_to_search_match = false;
                                                                         self.scroll_to_page = None;
@@ -2872,7 +2971,10 @@ impl KestrelApp {
                                                                         egui::Stroke::NONE,
                                                                     ));
 
-                                                                    if self.scroll_to_search_match && self.scroll_to_page == Some(page_idx) {
+                                                                    if is_active_result
+                                                                        && self.scroll_to_search_match
+                                                                        && self.scroll_to_page == Some(page_idx)
+                                                                    {
                                                                         let bbox = egui::Rect::from_two_pos(p0, p2);
                                                                         ui.scroll_to_rect(bbox, Some(egui::Align::Center));
                                                                         self.scroll_to_search_match = false;
