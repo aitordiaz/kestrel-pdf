@@ -3,7 +3,7 @@
 - **Date**: 2026-10-19
 - **Author**: Antigravity (AI Pair Programmer)
 - **Active Version**: v0.3.3
-- **Active Branch**: `feat/auto-detect-system-certificates-and-autofill`
+- **Active Branch**: `main` (Merged PR #33, Tag `v0.3.3` published)
 
 ---
 
