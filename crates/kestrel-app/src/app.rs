@@ -131,6 +131,8 @@ pub struct KestrelApp {
     pub signer_issuer_input: String,
     pub signature_location_input: String,
     pub selected_certificate_path: Option<String>,
+    pub detected_certificates: Vec<kestrel_core::cert::InstalledCertificate>,
+    pub selected_certificate_index: Option<usize>,
 
     // Phase 3: In-Place Text & Image Editing State
     pub editing_text_modal_open: bool,
@@ -189,6 +191,8 @@ impl Default for KestrelApp {
             signer_issuer_input: "FNMT-RCM AC Usuarios".to_string(),
             signature_location_input: "Madrid, España".to_string(),
             selected_certificate_path: None,
+            detected_certificates: Vec::new(),
+            selected_certificate_index: None,
 
             // Phase 3 editing defaults
             editing_text_modal_open: false,
@@ -596,10 +600,91 @@ impl KestrelApp {
         );
     }
 
-    /// Opens the digital certificate signature modal dialog.
+    /// Opens the digital certificate signature modal dialog and refreshes detected certificates.
     pub fn open_digital_signature_dialog(&mut self) {
         self.digital_signature_selecting_rect = false;
         self.digital_signature_modal_open = true;
+        if self.detected_certificates.is_empty() {
+            self.refresh_detected_certificates();
+        } else {
+            let target_idx = self.selected_certificate_index.unwrap_or_else(|| {
+                self.detected_certificates
+                    .iter()
+                    .position(|c| c.is_valid)
+                    .unwrap_or(0)
+            });
+            self.select_certificate_by_index(target_idx);
+        }
+    }
+
+    /// Automatically scans and detects installed personal certificates on the operating system.
+    pub fn refresh_detected_certificates(&mut self) {
+        let discovered = kestrel_core::cert::detect_system_certificates();
+        if !discovered.is_empty() {
+            self.detected_certificates = discovered;
+            let best_idx = self
+                .detected_certificates
+                .iter()
+                .position(|c| c.is_valid)
+                .unwrap_or(0);
+            self.select_certificate_by_index(best_idx);
+        }
+    }
+
+    /// Selects a detected certificate by index and autofills all metadata fields.
+    pub fn select_certificate_by_index(&mut self, idx: usize) {
+        if let Some(cert) = self.detected_certificates.get(idx) {
+            self.selected_certificate_index = Some(idx);
+            self.signer_name_input = cert.subject_name.clone();
+            self.signer_id_input = cert.subject_id.clone().unwrap_or_default();
+            self.signer_issuer_input = cert.issuer.clone();
+            if self.signature_reason_input.trim().is_empty()
+                || self.signature_reason_input == "Approved and Signed via Kestrel-PDF"
+            {
+                self.signature_reason_input = "Documento firmado digitalmente".to_string();
+            }
+            self.selected_certificate_path = match &cert.source {
+                kestrel_core::cert::CertificateSource::File(p) => Some(p.clone()),
+                _ => None,
+            };
+            self.status_toast = Some(format!(
+                "Certificado seleccionado: {}",
+                cert.display_label()
+            ));
+        }
+    }
+
+    /// Loads, parses certificate bytes (PEM, DER, or PKCS#12 container), adds to detected list, and autofills.
+    pub fn load_certificate_bytes_and_autofill(&mut self, bytes: &[u8], filename_or_path: &str) {
+        let source = kestrel_core::cert::CertificateSource::File(filename_or_path.to_string());
+        match kestrel_core::cert::parse_certificate_bytes(bytes, source) {
+            Ok(certs) if !certs.is_empty() => {
+                for cert in certs {
+                    let existing_pos = self
+                        .detected_certificates
+                        .iter()
+                        .position(|c| c.sha256_fingerprint == cert.sha256_fingerprint);
+                    if let Some(pos) = existing_pos {
+                        self.select_certificate_by_index(pos);
+                    } else {
+                        self.detected_certificates.push(cert);
+                        let new_idx = self.detected_certificates.len() - 1;
+                        self.select_certificate_by_index(new_idx);
+                    }
+                }
+                self.status_toast = Some(format!(
+                    "Certificado cargado con éxito: {}",
+                    self.signer_name_input
+                ));
+            }
+            Ok(_) => {
+                self.status_toast =
+                    Some("No se encontraron certificados válidos en el archivo".to_string());
+            }
+            Err(e) => {
+                self.status_toast = format!("Error leyendo certificado: {}", e).into();
+            }
+        }
     }
 
     /// Applies digital certificate signature to the session with current metadata and target rect.
@@ -643,23 +728,27 @@ impl KestrelApp {
         }
     }
 
-    /// Prompts file dialog to pick a certificate file (.p12, .pfx, .crt, .cer, .pem).
+    /// Prompts file dialog to pick a certificate file (.p12, .pfx, .crt, .cer, .pem, .der).
     pub fn pick_certificate_file_dialog(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Certificados Digitales",
-                &["p12", "pfx", "crt", "cer", "pem"],
+                &["p12", "pfx", "crt", "cer", "pem", "der"],
             )
             .pick_file()
         {
             let path_str = path.to_string_lossy().to_string();
-            let fname = path
-                .file_name()
-                .map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_else(|| path_str.clone());
-            self.selected_certificate_path = Some(path_str);
-            self.status_toast = Some(format!("Certificado seleccionado: {}", fname));
+            if let Ok(bytes) = std::fs::read(&path) {
+                self.load_certificate_bytes_and_autofill(&bytes, &path_str);
+            } else {
+                let fname = path
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path_str.clone());
+                self.selected_certificate_path = Some(path_str);
+                self.status_toast = Some(format!("Certificado seleccionado: {}", fname));
+            }
         }
     }
 
@@ -4160,48 +4249,127 @@ impl KestrelApp {
 
                 ui.add_space(8.0);
 
-                // 2. Certificate File Picker Card
+                // 2. Certificate Auto-Detection & Selection Card
                 crate::theme::Theme::card_frame().show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new("Archivo de Certificado Digital (.p12, .pfx, .crt, .cer):")
-                            .color(crate::theme::Theme::TEXT_SECONDARY)
-                            .size(12.0),
-                    );
-                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Certificados Instalados en el Sistema:")
+                                .color(crate::theme::Theme::TEXT_PRIMARY)
+                                .strong()
+                                .size(12.0),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    crate::theme::Theme::secondary_button(format!(
+                                        "{} Actualizar",
+                                        crate::icons::SEARCH
+                                    ))
+                                    .min_size(Vec2::new(0.0, 20.0)),
+                                )
+                                .on_hover_text("Escanear de nuevo los certificados personales del sistema")
+                                .clicked()
+                            {
+                                self.refresh_detected_certificates();
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+
+                    if self.detected_certificates.is_empty() {
+                        ui.label(
+                            egui::RichText::new(
+                                "No se detectaron certificados en el almacén personal del sistema.",
+                            )
+                            .color(crate::theme::Theme::TEXT_MUTED)
+                            .size(11.5),
+                        );
+                    } else {
+                        let selected_text = match self
+                            .selected_certificate_index
+                            .and_then(|i| self.detected_certificates.get(i))
+                        {
+                            Some(c) => c.display_label(),
+                            None => "Seleccionar un certificado instalado...".to_string(),
+                        };
+
+                        let mut new_selection = None;
+                        egui::ComboBox::from_id_salt("installed_certs_combo")
+                            .selected_text(selected_text)
+                            .width(ui.available_width())
+                            .show_ui(ui, |ui| {
+                                for (idx, cert) in self.detected_certificates.iter().enumerate() {
+                                    let is_selected = self.selected_certificate_index == Some(idx);
+                                    let status_mark = if cert.is_valid { "✓" } else { "⚠" };
+                                    let item_label = format!(
+                                        "{}  {}  [{}]",
+                                        crate::icons::CERTIFICATE,
+                                        cert.display_label(),
+                                        status_mark
+                                    );
+                                    if ui.selectable_label(is_selected, item_label).clicked() {
+                                        new_selection = Some(idx);
+                                    }
+                                }
+                            });
+
+                        if let Some(idx) = new_selection {
+                            self.select_certificate_by_index(idx);
+                        }
+
+                        // Active Certificate Information Pills
+                        if let Some(active_cert) = self
+                            .selected_certificate_index
+                            .and_then(|i| self.detected_certificates.get(i))
+                        {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                let (status_color, status_text) = if active_cert.is_valid {
+                                    (
+                                        Color32::from_rgb(34, 197, 94),
+                                        format!("✓ Vigente hasta {}", active_cert.not_after),
+                                    )
+                                } else {
+                                    (
+                                        Color32::from_rgb(239, 68, 68),
+                                        format!("⚠ Caducado el {}", active_cert.not_after),
+                                    )
+                                };
+
+                                crate::theme::Theme::pill_frame().show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(status_text)
+                                            .color(status_color)
+                                            .size(11.0),
+                                    );
+                                });
+
+                                crate::theme::Theme::pill_frame().show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{}", active_cert.source))
+                                            .color(crate::theme::Theme::TEXT_MUTED)
+                                            .size(11.0),
+                                    );
+                                });
+                            });
+                        }
+                    }
+
+                    ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         if ui
                             .add(
                                 crate::theme::Theme::secondary_button(format!(
-                                    "{} Cargar certificado...",
+                                    "{} Cargar desde archivo (.p12, .pfx, .crt, .cer)...",
                                     crate::icons::OPEN_FILE
                                 ))
-                                .min_size(Vec2::new(0.0, 24.0)),
+                                .min_size(Vec2::new(0.0, 22.0)),
                             )
-                            .on_hover_text("Seleccionar archivo de certificado desde el disco")
+                            .on_hover_text("Seleccionar y extraer datos desde un archivo de certificado")
                             .clicked()
                         {
                             self.pick_certificate_file_dialog();
                         }
-
-                        let file_label = match &self.selected_certificate_path {
-                            Some(p) => {
-                                let name = std::path::Path::new(p)
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| p.clone());
-                                format!("✓ {}", name)
-                            }
-                            None => "Perfil de firma PKI del sistema".to_string(),
-                        };
-                        ui.label(
-                            egui::RichText::new(file_label)
-                                .color(if self.selected_certificate_path.is_some() {
-                                    crate::theme::Theme::ACCENT_OCHRE
-                                } else {
-                                    crate::theme::Theme::TEXT_MUTED
-                                })
-                                .size(11.5),
-                        );
                     });
                 });
 

@@ -3,6 +3,7 @@
 //! Ultra-high-performance PDF processing engine, asynchronous tile rendering,
 //! and structural AST manipulation for Kestrel-PDF.
 
+pub mod cert;
 pub mod document;
 pub mod forms;
 pub mod redact;

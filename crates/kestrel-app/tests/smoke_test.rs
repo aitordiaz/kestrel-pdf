@@ -2799,3 +2799,174 @@ fn test_e2e_home_open_file_box_separated_layout() {
         "Start screen must render digital signature badge"
     );
 }
+
+#[test]
+fn test_e2e_auto_detect_certificates_selection_and_autofill() {
+    use kestrel_core::cert::{CertificateSource, InstalledCertificate};
+
+    let ctx = Context::default();
+    let mut app = KestrelApp::default();
+
+    let pdf_bytes = kestrel_core::synthetic::SyntheticPdfBuilder::new()
+        .with_page(595.28, 841.89)
+        .build()
+        .expect("Build PDF");
+    app.load_document_bytes(pdf_bytes, Some("contrato_acuerdo.pdf".to_string()));
+
+    // 1. Simulate two detected system certificates
+    let cert1 = InstalledCertificate {
+        id: "sha256_mock_cert_1".to_string(),
+        subject_name: "JUAN GARCIA PEREZ".to_string(),
+        subject_id: Some("12345678Z".to_string()),
+        issuer: "AC FNMT Usuarios".to_string(),
+        not_before: "2024-01-01".to_string(),
+        not_after: "2028-12-31".to_string(),
+        is_valid: true,
+        serial_number: "0A1B2C3D".to_string(),
+        sha256_fingerprint: "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"
+            .to_string(),
+        raw_der: vec![0x30, 0x82, 0x01, 0x00],
+        source: CertificateSource::WindowsStore("Personal".to_string()),
+    };
+
+    let cert2 = InstalledCertificate {
+        id: "sha256_mock_cert_2".to_string(),
+        subject_name: "MARIA LOPEZ SANCHEZ".to_string(),
+        subject_id: Some("87654321A".to_string()),
+        issuer: "AC DNI ELECTRONICO".to_string(),
+        not_before: "2023-05-10".to_string(),
+        not_after: "2027-05-10".to_string(),
+        is_valid: true,
+        serial_number: "FEEDBEEF".to_string(),
+        sha256_fingerprint: "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+            .to_string(),
+        raw_der: vec![0x30, 0x82, 0x01, 0x10],
+        source: CertificateSource::UserDirectory("~/.config/kestrel/certificates".to_string()),
+    };
+
+    app.detected_certificates = vec![cert1, cert2];
+
+    // 2. Open digital signature modal
+    app.open_digital_signature_dialog();
+    assert!(app.digital_signature_modal_open);
+
+    // Initial auto-selection must have selected cert 1
+    assert_eq!(app.selected_certificate_index, Some(0));
+    assert_eq!(app.signer_name_input, "JUAN GARCIA PEREZ");
+    assert_eq!(app.signer_id_input, "12345678Z");
+    assert_eq!(app.signer_issuer_input, "AC FNMT Usuarios");
+    assert_eq!(app.signature_reason_input, "Documento firmado digitalmente");
+
+    // 3. Switch to certificate 2
+    app.select_certificate_by_index(1);
+    assert_eq!(app.selected_certificate_index, Some(1));
+    assert_eq!(app.signer_name_input, "MARIA LOPEZ SANCHEZ");
+    assert_eq!(app.signer_id_input, "87654321A");
+    assert_eq!(app.signer_issuer_input, "AC DNI ELECTRONICO");
+
+    // 4. Render UI frame and verify modal elements
+    let raw_input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(1200.0, 900.0),
+        )),
+        ..Default::default()
+    };
+    let _ = ctx.run(raw_input.clone(), |ctx| {
+        app.render_ui(ctx);
+    });
+    let output = ctx.run(raw_input, |ctx| {
+        app.render_ui(ctx);
+    });
+
+    let texts = extract_all_text_from_shapes(&output.shapes);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("Firmar con Certificado Digital")),
+        "Modal title must be rendered"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("Certificados Instalados en el Sistema")),
+        "Installed certificates card header must be rendered"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("MARIA LOPEZ SANCHEZ")),
+        "Selected certificate signer name must be rendered in inputs and preview"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("87654321A")),
+        "Selected certificate NIF must be rendered"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("AC DNI ELECTRONICO")),
+        "Selected certificate issuer must be rendered"
+    );
+
+    // 5. Apply digital signature and verify document roundtrip
+    let applied = app.apply_digital_certificate_signature();
+    assert!(applied);
+    assert!(!app.digital_signature_modal_open);
+
+    let session = app.session.as_mut().expect("Session exists");
+    assert!(session.digital_signature.is_some());
+    let sig_meta = session.digital_signature.as_ref().unwrap();
+    assert_eq!(sig_meta.signer_name, "MARIA LOPEZ SANCHEZ");
+    assert_eq!(sig_meta.signer_id, Some("87654321A".to_string()));
+    assert_eq!(sig_meta.issuer, Some("AC DNI ELECTRONICO".to_string()));
+
+    let saved_pdf = session.save_to_bytes().expect("Save to PDF");
+    let parsed_doc = lopdf::Document::load_mem(&saved_pdf).expect("Parse saved PDF");
+    let pages = parsed_doc.get_pages();
+    let p1_id = pages.get(&1).expect("Page 1 exists");
+    let p1_dict = parsed_doc.get_object(*p1_id).unwrap().as_dict().unwrap();
+    let annots = p1_dict.get(b"Annots").unwrap().as_array().unwrap();
+    assert!(!annots.is_empty(), "Page 1 must have signature annotation");
+}
+
+#[test]
+fn test_e2e_certificate_bytes_load_and_autofill() {
+    let mut app = KestrelApp::default();
+
+    let pdf_bytes = kestrel_core::synthetic::SyntheticPdfBuilder::new()
+        .with_page(595.28, 841.89)
+        .build()
+        .expect("Build PDF");
+    app.load_document_bytes(pdf_bytes, Some("factura.pdf".to_string()));
+
+    // Generate in-memory self-signed certificate using rcgen
+    let mut params =
+        rcgen::CertificateParams::new(vec!["pki.example.com".to_string()]).expect("Params");
+    params.distinguished_name.push(
+        rcgen::DnType::CommonName,
+        "CARLOS FERNANDEZ RUIZ - 09876543W",
+    );
+    params
+        .distinguished_name
+        .push(rcgen::DnType::OrganizationName, "AC CAMERFIRMA CORPORATE");
+
+    let key_pair = rcgen::KeyPair::generate().expect("Key pair");
+    let cert = params.self_signed(&key_pair).expect("Self signed");
+    let der_bytes = cert.der();
+
+    // Load certificate bytes into app
+    app.load_certificate_bytes_and_autofill(der_bytes, "camerfirma_carlos.cer");
+
+    // Verify auto-extraction and autofill
+    assert_eq!(app.signer_name_input, "CARLOS FERNANDEZ RUIZ");
+    assert_eq!(app.signer_id_input, "09876543W");
+    assert!(
+        app.signer_issuer_input.contains("AC CAMERFIRMA")
+            || app.signer_issuer_input.contains("CARLOS FERNANDEZ RUIZ")
+    );
+    assert!(app
+        .detected_certificates
+        .iter()
+        .any(|c| c.subject_name == "CARLOS FERNANDEZ RUIZ"));
+    assert_eq!(
+        app.selected_certificate_path,
+        Some("camerfirma_carlos.cer".to_string())
+    );
+}

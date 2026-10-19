@@ -28,6 +28,7 @@ Under **Spec-Driven Development (SDD)**, every feature, epic, or major fix must 
 | **[0016](0016-phase-3-in-place-text-and-image-editing.md)** | [Phase 3 — In-Place Text & Image Editing and Page Tree Mutations](0016-phase-3-in-place-text-and-image-editing.md) | v0.3.0 | **Completed** | In-place text modification, text box insertion, image replacement/deletion/insertion, and page tree management. |
 | **[0017](0017-search-individual-occurrences-and-counter.md)** | [Individual Search Occurrences, Active Context Snippets & Document Counter Badge](0017-search-individual-occurrences-and-counter.md) | v0.3.1 | **Completed** | Individual search match occurrences, context snippets before/after, active highlight styling, X/N counter badge, and next/prev arrow navigation. |
 | **[0018](0018-digital-certificate-signature-and-home-open-box.md)** | [Digital Certificate Signatures with Visual Box Selection & Centered Start Screen Hero Box](0018-digital-certificate-signature-and-home-open-box.md) | v0.3.2 | **Completed** | Sign with digital certificate, visual rectangle selection on canvas, PAdES appearance stream, and separated centered home open file box. |
+| **[0019](0019-system-certificate-auto-detection-and-metadata-extraction.md)** | [System Certificate Auto-Detection & Automated Metadata Extraction](0019-system-certificate-auto-detection-and-metadata-extraction.md) | v0.3.3 | **Draft** | Auto-detect system installed certificates, dropdown selector, automated metadata extraction (Subject, NIF/ID, Issuer, Validity), and autofill. |
 
 
 ---
