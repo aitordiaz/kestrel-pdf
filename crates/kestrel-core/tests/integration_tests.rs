@@ -2041,3 +2041,98 @@ fn test_integration_phase3_image_manipulation() {
     let layout_deleted = session.get_page_layout(0).expect("Page layout");
     assert_eq!(layout_deleted.images.len(), 0);
 }
+
+#[test]
+fn test_integration_extract_spanish_nif_or_id_formats() {
+    use kestrel_core::cert::{clean_subject_name, extract_spanish_nif_or_id};
+
+    // 1. Raw serial with Spanish eIDAS prefixes
+    assert_eq!(
+        extract_spanish_nif_or_id(Some("IDCES-12345678Z"), "JUAN GARCIA"),
+        Some("12345678Z".to_string())
+    );
+    assert_eq!(
+        extract_spanish_nif_or_id(Some("CIF-B12345678"), "EMPRESA SL"),
+        Some("B12345678".to_string())
+    );
+    assert_eq!(
+        extract_spanish_nif_or_id(Some("NIE-X1234567A"), "MARIA ROSSI"),
+        Some("X1234567A".to_string())
+    );
+
+    // 2. Embedded in Common Name with hyphen or parenthesis
+    assert_eq!(
+        extract_spanish_nif_or_id(None, "GARCIA PEREZ JUAN - 12345678Z"),
+        Some("12345678Z".to_string())
+    );
+    assert_eq!(
+        extract_spanish_nif_or_id(None, "LOPEZ DIAZ CARLOS (DNI: 87654321X)"),
+        Some("87654321X".to_string())
+    );
+    assert_eq!(
+        extract_spanish_nif_or_id(None, "ACME IBERICA SA - A12345678 (FIRMA)"),
+        Some("A12345678".to_string())
+    );
+
+    // 3. Clean subject name
+    assert_eq!(
+        clean_subject_name("GARCIA PEREZ JUAN - 12345678Z", Some("12345678Z")),
+        "GARCIA PEREZ JUAN"
+    );
+    assert_eq!(clean_subject_name("JUAN PEREZ (FIRMA)", None), "JUAN PEREZ");
+    assert_eq!(
+        clean_subject_name("MARIA LOPEZ (DNIe) (AUTENTICACIÓN)", None),
+        "MARIA LOPEZ"
+    );
+}
+
+#[test]
+fn test_integration_x509_metadata_extraction_and_nif_parsing() {
+    use kestrel_core::cert::{parse_certificate_bytes, parse_x509_der, CertificateSource};
+
+    // Generate in-memory self-signed certificate using rcgen
+    let mut params =
+        rcgen::CertificateParams::new(vec!["kestrel.example.com".to_string()]).expect("Params");
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "GARCIA PEREZ JUAN - 12345678Z");
+    params
+        .distinguished_name
+        .push(rcgen::DnType::OrganizationName, "AC FNMT Usuarios");
+
+    let key_pair = rcgen::KeyPair::generate().expect("Generate key pair");
+    let cert = params.self_signed(&key_pair).expect("Self signed cert");
+    let der_bytes = cert.der();
+    let pem_string = cert.pem();
+
+    // 1. Test DER parsing
+    let parsed_der =
+        parse_x509_der(der_bytes, CertificateSource::SyntheticMock).expect("Parse DER");
+    assert_eq!(parsed_der.subject_name, "GARCIA PEREZ JUAN");
+    assert_eq!(parsed_der.subject_id, Some("12345678Z".to_string()));
+    assert!(
+        parsed_der.issuer.contains("AC FNMT Usuarios")
+            || parsed_der.issuer.contains("GARCIA PEREZ JUAN")
+    );
+    assert!(parsed_der.is_valid);
+    assert!(!parsed_der.serial_number.is_empty());
+    assert_eq!(parsed_der.sha256_fingerprint.len(), 64);
+    assert!(parsed_der.display_label().contains("GARCIA PEREZ JUAN"));
+    assert!(parsed_der.display_label().contains("12345678Z"));
+
+    // 2. Test auto-detect PEM vs DER parsing
+    let parsed_pem =
+        parse_certificate_bytes(pem_string.as_bytes(), CertificateSource::SyntheticMock)
+            .expect("Parse PEM bytes");
+    assert_eq!(parsed_pem.len(), 1);
+    assert_eq!(parsed_pem[0].subject_name, "GARCIA PEREZ JUAN");
+    assert_eq!(parsed_pem[0].subject_id, Some("12345678Z".to_string()));
+    assert_eq!(
+        parsed_pem[0].sha256_fingerprint,
+        parsed_der.sha256_fingerprint
+    );
+
+    // 3. Test subtitle and formatting
+    let sub = parsed_der.subtitle_label();
+    assert!(sub.contains("Válido hasta"));
+}
